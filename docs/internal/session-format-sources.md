@@ -1,5 +1,5 @@
 ---
-last_edited: 2026-10-07
+last_edited: 2026-10-14
 ---
 
 # Session Format Source Inventory
@@ -576,6 +576,17 @@ fixtures retain this field; missing identities remain source-local.
   `internal/parser/cowork_paths.go`, and `internal/parser/cowork_provider.go`.
 
 ## Codex (`codex`)
+
+- **First-use lookup check (2026-10-14):** Reverified the pinned
+  [rollout filename parser and renderer](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/rollout/src/rollout_file_name.rs#L42-L73).
+  Ordinary rollout filenames contain the thread UUID; Agentsview adds the
+  `codex:` namespace when importing them. Usage queries resolve an unarchived
+  bare UUID through the daemon's configured provider sources before import.
+  Synthetic transcript tests exercise first-use lookup through the HTTP API
+  and targeted S3 ingestion from the configured machine root. First-use S3
+  lookup prefers a live rollout over an archived copy of the same session,
+  using the same selection rule as descendant discovery. Descendant refresh
+  indexes each matching S3 root once and imports the selected objects.
 
 - **Revert rollouts (checked 2026-09-29 at rust-v0.154.0):** Only
   `thread/revert` writes a rollout named
@@ -1553,6 +1564,17 @@ fixtures retain this field; missing identities remain source-local.
   `internal/parser/opencodereview_provider.go`.
 
 ## OpenCode (`opencode`)
+
+**Retained-parent check (2026-10-14):** Reverified the pinned
+[session identity schema](https://github.com/anomalyco/opencode/blob/67caf894e0843ee370e72839e8265e483233479b/packages/opencode/src/session/session.ts#L213-L233)
+and
+[storage paths](https://github.com/anomalyco/opencode/blob/67caf894e0843ee370e72839e8265e483233479b/packages/opencode/src/storage/storage.ts#L139-L147).
+Session metadata carries `id` and optional `parentID`. Agentsview caches the
+project's storage inventory once per refresh and traverses it from each retained
+session identity. Missing parent or intermediate JSON does not hide descendants
+whose metadata remains. Synthetic storage fixtures verify this behavior for the
+OpenCode, Kilo, MiMoCode, and ICodeMate parsers, including a new grandchild and
+an unrelated session in the same project root.
 
 **Empty-search reply check (2026-09-27):** The pinned
 [`grep` tool](https://github.com/anomalyco/opencode/blob/dff8fbc149fb7492e4f07b713ac31ea70d9a541c/packages/core/src/tool/grep.ts#L39)
