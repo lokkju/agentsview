@@ -88,7 +88,7 @@ func serveScript(bin remoteBinary, op Op) (string, error) {
 	return script, validateScript(script)
 }
 
-func (s *Source) start(ctx context.Context, op Op, req serveRequest) (io.ReadCloser, error) {
+func (s *Source) start(ctx context.Context, op Op, req serveRequest) (*zstdChecked, error) {
 	bin, err := s.ensure(ctx)
 	if err != nil {
 		return nil, err
@@ -162,11 +162,36 @@ func (s *Source) Manifest(
 func (s *Source) Archive(
 	ctx context.Context, request remotesync.ArchiveRequest,
 ) (*remotesync.ArchiveStream, error) {
-	stream, err := s.start(ctx, OpArchive, serveRequest{Archive: &request})
+	stream, err := s.startArchive(ctx, request)
+	if binaryMissing(err) && s.forgetBinary() {
+		stream, err = s.startArchive(ctx, request)
+	}
 	if err != nil {
 		return nil, err
 	}
 	return &remotesync.ArchiveStream{Body: stream, Encoding: remotesync.ArchiveEncodingZstd}, nil
+}
+
+// startArchive starts the archive and waits for its first byte. A remote
+// whose binary vanished exits before writing anything, so its failure shows
+// here, where Archive can still provision again, instead of mid-transfer.
+func (s *Source) startArchive(
+	ctx context.Context, request remotesync.ArchiveRequest,
+) (*zstdChecked, error) {
+	stream, err := s.start(ctx, OpArchive, serveRequest{Archive: &request})
+	if err != nil {
+		return nil, err
+	}
+	if _, peekErr := stream.r.Peek(1); peekErr != nil {
+		// At EOF, Close reports the remote's exit; otherwise it only reports
+		// that it stopped ssh, and the read error is the cause.
+		closeErr := stream.Close()
+		if closeErr != nil && !errors.Is(closeErr, errStreamAbandoned) {
+			return nil, closeErr
+		}
+		return nil, fmt.Errorf("remote archive sent no data: %w", peekErr)
+	}
+	return stream, nil
 }
 
 // zstdChecked fails the first Read when the stream does not start with a
@@ -178,7 +203,7 @@ type zstdChecked struct {
 	err     error
 }
 
-func newZstdChecked(rc io.ReadCloser) io.ReadCloser {
+func newZstdChecked(rc io.ReadCloser) *zstdChecked {
 	return &zstdChecked{r: bufio.NewReader(rc), closer: rc}
 }
 

@@ -290,6 +290,37 @@ func TestSSHSourceProvisionsAgainWhenItsBinaryVanishes(t *testing.T) {
 	assert.FileExists(t, filepath.Join(cached, "agentsview"), "uploaded again")
 }
 
+// vanishBeforeArchive removes a cached binary just before the archive step,
+// after targets and manifest ran with it, as another collector's retention
+// could.
+type vanishBeforeArchive struct {
+	*Source
+	cached string
+}
+
+func (s vanishBeforeArchive) Archive(
+	ctx context.Context, request remotesync.ArchiveRequest,
+) (*remotesync.ArchiveStream, error) {
+	if err := os.RemoveAll(s.cached); err != nil {
+		return nil, err
+	}
+	return s.Source.Archive(ctx, request)
+}
+
+func TestSSHSourceProvisionsAgainWhenItsBinaryVanishesBeforeTheArchive(t *testing.T) {
+	env := newSourceEnv(t)
+	installTestBinary(t, env.ssh.Home, env.build)
+	id, err := env.build.ContentID()
+	require.NoError(t, err)
+	cached := filepath.Join(env.ssh.Home, ".cache", "agentsview", "bin", id)
+
+	stats, err := env.run(t, vanishBeforeArchive{Source: env.source(), cached: cached})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.SessionsSynced)
+	assert.FileExists(t, filepath.Join(cached, "agentsview"), "uploaded again")
+}
+
 func TestSSHSourceFullSyncLeavesRemoteHomeUnchanged(t *testing.T) {
 	env := newSourceEnv(t)
 	installTestBinary(t, env.ssh.Home, env.build)

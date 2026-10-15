@@ -294,12 +294,13 @@ Retention is therefore based on idle time, not on the newest version:
   refresh that fails makes the identity a miss. A refreshed identity is safe
   from retention for 30 days.
 - Retention can still remove an identity between its idle check and another
-  collector's refresh. That collector's first serve step then fails with shell
+  collector's refresh. That collector's next serve step then fails with shell
   status 127 because the binary is gone, and the SSH source provisions again
-  once and retries the step. Retention removes a binary within moments of its
-  idle check, so the first step after the probe catches it, before any archive
-  transfer. No remote lock is used: a POSIX shell has no atomic way to reclaim
-  a lock left by a holder that died without risking removal of a newer lock.
+  once per sync and retries the step. The archive step waits for the stream's
+  first byte before returning, so a vanished binary fails there, before any
+  transfer, and is retried the same way. No remote lock is used: a POSIX shell
+  has no atomic way to reclaim a lock left by a holder that died without
+  risking removal of a newer lock.
 
 A collector that syncs less than once every 30 days uploads again on its next
 sync.
