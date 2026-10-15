@@ -23,9 +23,9 @@ const maxServeRequestBytes = 64 << 20
 // Serve runs one operation. It reads the JSON request from in and writes the
 // zstd-compressed response to out. Failures are *ServeError values.
 func Serve(ctx context.Context, op Op, cfg config.Config, in io.Reader, out io.Writer) error {
-	var req serveRequest
-	if err := json.UnmarshalRead(io.LimitReader(in, maxServeRequestBytes), &req); err != nil {
-		return &ServeError{Code: CodeInternal, Message: "decode request: " + err.Error()}
+	req, err := readServeRequest(ctx, in)
+	if err != nil {
+		return err
 	}
 	if req.ProtocolVersion != remotesync.ProtocolVersion {
 		return &ServeError{Code: CodeIncompatibleProtocol, Message: fmt.Sprintf(
@@ -43,6 +43,36 @@ func Serve(ctx context.Context, op Op, cfg config.Config, in io.Reader, out io.W
 		return &ServeError{Code: CodeInternal, Message: "finish response: " + err.Error()}
 	}
 	return nil
+}
+
+// readServeRequest decodes the request and gives up when ctx ends. A
+// collector that stalls mid-request keeps stdin open, and a signal must still
+// end the process; the abandoned read ends when the process exits.
+func readServeRequest(ctx context.Context, in io.Reader) (serveRequest, error) {
+	type decoded struct {
+		req serveRequest
+		err error
+	}
+	done := make(chan decoded, 1)
+	go func() {
+		var req serveRequest
+		err := json.UnmarshalRead(io.LimitReader(in, maxServeRequestBytes), &req)
+		done <- decoded{req: req, err: err}
+	}()
+	select {
+	case d := <-done:
+		if d.err != nil {
+			return serveRequest{}, &ServeError{
+				Code: CodeInternal, Message: "decode request: " + d.err.Error(),
+			}
+		}
+		return d.req, nil
+	case <-ctx.Done():
+		return serveRequest{}, &ServeError{
+			Code:    CodeInternal,
+			Message: "interrupted while reading the request: " + ctx.Err().Error(),
+		}
+	}
 }
 
 func serveOp(ctx context.Context, op Op, cfg config.Config, req serveRequest, out io.Writer) error {

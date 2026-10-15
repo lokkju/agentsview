@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"go.kenn.io/agentsview/internal/remotesync"
@@ -54,6 +55,27 @@ func requireIdentity(id string) error {
 const pathProbeVersions = `v0.2[3-9]*|0.2[3-9]*|v0.[3-9][0-9]*|0.[3-9][0-9]*|` +
 	`v0.[1-9][0-9][0-9]*|0.[1-9][0-9][0-9]*|v[1-9]*.*|[1-9]*.*`
 
+// remoteLockWaitSeconds bounds how long a probe or an install's retention
+// waits for the remote cache lock before going on without it. Tests shorten
+// it.
+var remoteLockWaitSeconds = 30
+
+// lockCacheScript takes the remote cache lock, a directory that mkdir
+// creates atomically on every platform, and sets $got when it holds it. A
+// lock older than two minutes was left by a holder that died and is taken
+// over. Nothing is created when the cache does not exist yet.
+func lockCacheScript() string {
+	return `got=""; if [ -d "$bin" ]; then i=0; ` +
+		`while [ "$i" -lt ` + strconv.Itoa(remoteLockWaitSeconds) + ` ]; do ` +
+		`find "$bin/.lock" -prune -mmin +2 -exec rmdir {} + 2>/dev/null || true; ` +
+		`if mkdir "$bin/.lock" 2>/dev/null; then got=1; break; fi; ` +
+		`i=$((i+1)); sleep 1; done; fi`
+}
+
+// unlockCacheScript releases the lock only if this script took it.
+const unlockCacheScript = `if [ -n "$got" ]; then ` +
+	`rmdir "$bin/.lock" 2>/dev/null || true; got=""; fi`
+
 // probeScript reports the platform, probes each cached identity (touching
 // .last-used for every one that answers), then probes agentsview on PATH
 // when its version is new enough to answer safely. Each report line ends
@@ -68,10 +90,16 @@ func probeScript(ids []string) (string, error) {
 		`bin="` + remoteBinDir + `"`,
 		`echo "os=$(uname -s)"`,
 		`echo "arch=$(uname -m)"`,
+		lockCacheScript(),
+		// Retention takes the same lock, so it cannot remove an identity
+		// between this check and the refresh. A refreshed identity is safe
+		// from retention for 30 days; one that cannot be refreshed is a miss.
 		`for id in ` + strings.Join(ids, " ") + `; do ` +
 			`if [ -x "$bin/$id/agentsview" ] && ` +
-			`out=$("$bin/$id/agentsview" remote-sync probe 2>/dev/null); then ` +
-			`touch "$bin/$id/.last-used"; printf "cached %s %s" "$id" "$out"; echo; fi; done`,
+			`out=$("$bin/$id/agentsview" remote-sync probe 2>/dev/null) && ` +
+			`touch "$bin/$id/.last-used" 2>/dev/null; then ` +
+			`printf "cached %s %s" "$id" "$out"; echo; fi; done`,
+		unlockCacheScript,
 		`if command -v agentsview >/dev/null 2>&1; then ` +
 			`v=$(agentsview version </dev/null 2>/dev/null) || v=""; ` +
 			`case "${v#agentsview }" in ` + pathProbeVersions + `) ` +
@@ -94,9 +122,10 @@ func installScript(id string) (string, error) {
 		`set -eu`,
 		`bin="` + remoteBinDir + `"`,
 		`id="` + id + `"`,
+		`got=""`,
 		`mkdir -p "$bin"`,
 		`tmp=$(mktemp -d "$bin/.tmp-XXXXXX")`,
-		`cleanup() { rm -rf "$tmp"; }`,
+		`cleanup() { rm -rf "$tmp"; ` + unlockCacheScript + `; }`,
 		`trap cleanup EXIT`,
 		`tar -xzf - -C "$tmp"`,
 		`[ -f "$tmp/agentsview" ] || ` +
@@ -106,11 +135,16 @@ func installScript(id string) (string, error) {
 		`mkdir -p "$bin/$id"`,
 		`mv -f "$tmp/agentsview" "$bin/$id/agentsview"`,
 		`touch "$bin/$id/.last-used"`,
-		`find "$bin" -mindepth 1 -maxdepth 1 -type d -name ".tmp-*" -mtime +0 ` +
-			`-exec rm -rf {} + || true`,
-		`for d in "$bin"/*; do [ -d "$d" ] || continue; [ "$d" = "$bin/$id" ] && continue; ` +
+		lockCacheScript(),
+		// Retention runs only under the cache lock; without it, it waits for
+		// a later install.
+		`if [ -n "$got" ]; then ` +
+			`find "$bin" -mindepth 1 -maxdepth 1 -type d -name ".tmp-*" -mtime +0 ` +
+			`-exec rm -rf {} + || true; ` +
+			`for d in "$bin"/*; do [ -d "$d" ] || continue; [ "$d" = "$bin/$id" ] && continue; ` +
 			`m="$d"; [ -f "$d/.last-used" ] && m="$d/.last-used"; ` +
-			`if [ -n "$(find "$m" -prune -mtime +30)" ]; then rm -rf "$d"; fi; done || true`,
+			`if [ -n "$(find "$m" -prune -mtime +30)" ]; then rm -rf "$d"; fi; done || true; fi`,
+		unlockCacheScript,
 	}, "; ")
 	return script, validateScript(script)
 }
@@ -176,7 +210,7 @@ func (p Provisioner) Ensure(ctx context.Context) (remoteBinary, error) {
 	releaseID, isRelease := p.Build.ReleaseID()
 	contentID, err := p.Build.ContentID()
 	if err != nil {
-		return remoteBinary{}, err
+		return remoteBinary{}, &ProvisionError{Err: err}
 	}
 	ids := []string{contentID}
 	if isRelease {
@@ -205,7 +239,7 @@ func (p Provisioner) Ensure(ctx context.Context) (remoteBinary, error) {
 	}
 	remote, err := report.platform()
 	if err != nil {
-		return remoteBinary{}, err
+		return remoteBinary{}, &ProvisionError{Err: err}
 	}
 	return p.install(ctx, remote, releaseID, isRelease, contentID)
 }
@@ -223,14 +257,14 @@ func (p Provisioner) install(
 		case err == nil:
 			return p.installTarball(ctx, releaseID, tarball)
 		case !errors.Is(err, errReleaseNotFound):
-			return remoteBinary{}, err
+			return remoteBinary{}, &ProvisionError{Err: err}
 		}
 	}
 	if remote != localPlatform() {
-		return remoteBinary{}, fmt.Errorf(
+		return remoteBinary{}, &ProvisionError{Err: fmt.Errorf(
 			"no agentsview release matches this build (%s) for remote platform %s; "+
 				"install agentsview on the remote or sync from a release build",
-			p.Build.Version, remote)
+			p.Build.Version, remote)}
 	}
 	return p.installSelf(ctx, contentID)
 }
@@ -239,7 +273,7 @@ func (p Provisioner) install(
 func (p Provisioner) installTarball(ctx context.Context, id, path string) (remoteBinary, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return remoteBinary{}, fmt.Errorf("open release tarball: %w", err)
+		return remoteBinary{}, &ProvisionError{Err: fmt.Errorf("open release tarball: %w", err)}
 	}
 	defer f.Close()
 	return p.runInstall(ctx, id, f)
@@ -260,7 +294,7 @@ func (p Provisioner) installSelf(ctx context.Context, id string) (remoteBinary, 
 	// Closing the reader releases a packer blocked on a write.
 	_ = pr.Close()
 	if packErr := <-packed; packErr != nil && !errors.Is(packErr, io.ErrClosedPipe) {
-		return remoteBinary{}, packErr
+		return remoteBinary{}, &ProvisionError{Err: packErr}
 	}
 	return bin, err
 }

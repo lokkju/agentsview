@@ -329,18 +329,3 @@ func TestServeProcessRestoresBlockingStdout(t *testing.T) {
 		})
 	}
 }
-
-func TestProbeProcessPrintsVersionLine(t *testing.T) {
-	cmd := exec.CommandContext(t.Context(), os.Args[0], "remote-sync", "probe")
-	cmd.Env = []string{testChildEnv + "=1", "HOME=" + t.TempDir()}
-
-	output, err := cmd.Output()
-
-	require.NoError(t, err)
-	var probe ProbeResult
-	require.NoError(t, json.Unmarshal(output, &probe))
-	assert.Equal(t, ProbeResult{
-		Version: testChildVersion, ProtocolVersion: remotesync.ProtocolVersion,
-	}, probe)
-	assert.True(t, bytes.HasSuffix(output, []byte("\n")), "probe prints one line")
-}

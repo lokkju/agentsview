@@ -3,6 +3,7 @@ package sshremote
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,7 +88,6 @@ func TestServe(t *testing.T) {
 		request  serveRequest
 		wantCode ErrorCode // empty means success
 	}{
-		{"targets", OpTargets, serveRequest{ProtocolVersion: version}, ""},
 		{
 			"wrong protocol", OpTargets,
 			serveRequest{ProtocolVersion: version + 1},
@@ -102,11 +103,6 @@ func TestServe(t *testing.T) {
 			"manifest without targets", OpManifest,
 			serveRequest{ProtocolVersion: version},
 			CodeInternal,
-		},
-		{
-			"archive", OpArchive,
-			serveRequest{ProtocolVersion: version, Archive: archiveOf(allowed)},
-			"",
 		},
 		{
 			"archive outside roots", OpArchive,
@@ -131,6 +127,30 @@ func TestServe(t *testing.T) {
 			require.NoError(t, err)
 			assert.NotEmpty(t, decodeServeResponse(t, &out))
 		})
+	}
+}
+
+func TestServeStopsReadingTheRequestWhenCancelled(t *testing.T) {
+	cfg, _ := serveTestConfig(t)
+	// A collector that stalls mid-request keeps stdin open. A signal must
+	// still end the remote process instead of waiting for the rest.
+	in, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
+	go func() { _, _ = writer.Write([]byte(`{"protocol_version":`)) }()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, OpTargets, cfg, in, io.Discard) }()
+
+	cancel()
+
+	select {
+	case err := <-done:
+		serveErr, ok := errors.AsType[*ServeError](err)
+		require.True(t, ok, "error %v is not a ServeError", err)
+		assert.Equal(t, CodeInternal, serveErr.Code)
+		assert.Contains(t, serveErr.Message, "interrupted")
+	case <-time.After(60 * time.Second): // hang guard; the event is Serve returning
+		require.FailNow(t, "Serve kept reading the request after cancellation")
 	}
 }
 

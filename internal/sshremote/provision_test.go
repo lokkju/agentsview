@@ -13,10 +13,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -72,6 +74,7 @@ func remoteToolDir(t *testing.T) string {
 	dir := t.TempDir()
 	for _, tool := range []string{
 		"sh", "uname", "tar", "gzip", "mktemp", "chmod", "mkdir", "mv", "touch", "find", "rm",
+		"rmdir", "sleep",
 	} {
 		path, err := exec.LookPath(tool)
 		require.NoError(t, err)
@@ -345,6 +348,9 @@ func TestProvisionEnsure(t *testing.T) {
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.False(t, remotesync.IsHostUnavailable(err), "ssh reached the host")
+				assert.Contains(t, remotesync.FailureSummary(err), tt.wantErr,
+					"the summary keeps the remedy")
 				assert.Equal(t, before, env.binEntries(t), "nothing installed")
 				return
 			}
@@ -370,6 +376,27 @@ func TestProvisionEnsure(t *testing.T) {
 			assert.Equal(t, remotesync.ProtocolVersion, probeThrough(t, p, bin).ProtocolVersion)
 		})
 	}
+}
+
+func TestProvisionReleaseServerFailureIsNotAnOfflineHost(t *testing.T) {
+	env := newProvisionEnv(t)
+	build := LocalBuild{
+		Version:    "v0.45.0",
+		Executable: writeExecutable(t, t.TempDir(), "agentsview", fakeAgentsviewScript),
+	}
+	// A closed server refuses connections, the error an unreachable host
+	// gives. ssh reached the remote, so the sync must report a failure.
+	srv := httptest.NewServer(http.NotFoundHandler())
+	srv.Close()
+	p := env.provisioner(build, srv.URL, t.TempDir())
+
+	_, err := p.Ensure(t.Context())
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, syscall.ECONNREFUSED)
+	assert.False(t, remotesync.IsHostUnavailable(err))
+	assert.Contains(t, remotesync.FailureSummary(err),
+		"SSH remote sync failed: could not install agentsview on the remote")
 }
 
 func TestProvisionProbesPathBinaryOnlyWhenItsVersionIsSafe(t *testing.T) {
@@ -505,6 +532,76 @@ func TestProvisionRetention(t *testing.T) {
 		env.binEntries(t))
 }
 
+func TestProvisionRetentionRespectsTheCacheLock(t *testing.T) {
+	remoteLockWaitSeconds = 1
+	t.Cleanup(func() { remoteLockWaitSeconds = 30 })
+	tests := []struct {
+		name          string
+		lockAge       time.Duration
+		wantRetention bool
+	}{
+		// Another collector is probing or cleaning up: leave its lock and
+		// the idle identity alone, and still finish the install.
+		{name: "held lock skips retention", lockAge: 0, wantRetention: false},
+		// A lock older than two minutes belongs to a holder that died.
+		{name: "stale lock is taken over", lockAge: 10 * time.Minute, wantRetention: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newProvisionEnv(t)
+			bin := env.binDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(bin, "old-a"), 0o755))
+			setAge(t, filepath.Join(bin, "old-a", ".last-used"), 40*24*time.Hour)
+			lock := filepath.Join(bin, ".lock")
+			require.NoError(t, os.Mkdir(lock, 0o755))
+			lockTime := time.Now().Add(-tt.lockAge)
+			require.NoError(t, os.Chtimes(lock, lockTime, lockTime))
+			p := env.provisioner(LocalBuild{Version: "dev"}, "", t.TempDir())
+
+			_, err := p.installTarball(t.Context(), "dev-0123456789abcdef",
+				writeTarball(t, tarEntry{"agentsview", fakeAgentsviewScript}))
+
+			require.NoError(t, err)
+			entries := env.binEntries(t)
+			assert.Contains(t, entries, "dev-0123456789abcdef")
+			assert.Equal(t, !tt.wantRetention, slices.Contains(entries, "old-a"),
+				"idle identity kept only when the lock is held")
+			assert.Equal(t, !tt.wantRetention, slices.Contains(entries, ".lock"),
+				"a held lock is left to its owner; a taken-over one is released")
+		})
+	}
+}
+
+func TestProvisionSkipsACachedBinaryItCannotRefresh(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("skipping: root can write into read-only directories")
+	}
+	env := newProvisionEnv(t)
+	build := LocalBuild{
+		Version:    "dev",
+		Executable: writeExecutable(t, t.TempDir(), "agentsview", fakeAgentsviewScript),
+	}
+	contentID, err := build.ContentID()
+	require.NoError(t, err)
+	env.installCached(t, contentID, fakeAgentsviewScript)
+	dir := filepath.Join(env.binDir(), contentID)
+	require.NoError(t, os.Remove(filepath.Join(dir, ".last-used")))
+	// Without a refreshed .last-used, retention may remove the binary later,
+	// so the probe must not select it.
+	require.NoError(t, os.Chmod(dir, 0o555))
+	t.Cleanup(func() { assert.NoError(t, os.Chmod(dir, 0o755)) })
+	pathDir := t.TempDir()
+	writeExecutable(t, pathDir, "agentsview", pathAgentsviewScript(remotesync.ProtocolVersion))
+	env.setRemotePath(t, pathDir)
+	srv, _ := provisionReleaseServer(t, false)
+	p := env.provisioner(build, srv.URL, t.TempDir())
+
+	bin, err := p.Ensure(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, pathBinary, bin)
+}
+
 func TestProvisionRetentionFailureKeepsTheInstall(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("skipping: root can remove read-only directories")
@@ -607,12 +704,11 @@ func TestProvisionScriptsRejectInvalidIdentity(t *testing.T) {
 }
 
 func TestProvisionScriptsAreValidRemoteScripts(t *testing.T) {
-	probe, err := probeScript([]string{"v0.45.0", "v0.45.0-0123456789abcdef"})
+	// Both builders return validateScript's verdict as their error.
+	_, err := probeScript([]string{"v0.45.0", "v0.45.0-0123456789abcdef"})
 	require.NoError(t, err)
-	assert.NoError(t, validateScript(probe))
-	install, err := installScript("dev+dirty-0123456789abcdef")
+	_, err = installScript("dev+dirty-0123456789abcdef")
 	require.NoError(t, err)
-	assert.NoError(t, validateScript(install))
 }
 
 func TestParseProbeIgnoresUnrelatedOutput(t *testing.T) {

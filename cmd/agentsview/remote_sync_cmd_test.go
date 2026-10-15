@@ -28,6 +28,7 @@ func TestRemoteSyncProbePrintsVersionLine(t *testing.T) {
 	assert.Equal(t, sshremote.ProbeResult{
 		Version: version, ProtocolVersion: remotesync.ProtocolVersion,
 	}, probe)
+	assert.True(t, bytes.HasSuffix(stdout.Bytes(), []byte("\n")), "probe prints one line")
 	assert.Empty(t, stderr.String())
 }
 

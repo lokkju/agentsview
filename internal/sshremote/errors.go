@@ -141,6 +141,29 @@ func (e *CommandError) RemoteRefused() bool {
 	return e.Remote != nil && e.Remote.Code == CodeForbidden
 }
 
+// ProvisionError reports that agentsview could not be placed on a remote
+// that ssh already reached. It never means the host is offline, even when the
+// cause is a network error talking to the release server.
+type ProvisionError struct {
+	Err error
+}
+
+func (e *ProvisionError) Error() string {
+	return "install agentsview on the remote: " + e.Err.Error()
+}
+
+func (e *ProvisionError) Unwrap() error { return e.Err }
+
+// HostUnavailable keeps remotesync from skipping a host ssh reached.
+func (e *ProvisionError) HostUnavailable() bool { return false }
+
+// FailureSummary keeps the cause and remedy, such as installing agentsview
+// on the remote, which the generic summary would drop.
+func (e *ProvisionError) FailureSummary() string {
+	return "SSH remote sync failed: could not install agentsview on the remote: " +
+		summaryText(e.Err.Error())
+}
+
 const summaryDetailBytes = 300
 
 // FailureSummary is the message the CLI and API show for this failure.

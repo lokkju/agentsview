@@ -181,6 +181,11 @@ would leave the snapshot behind.
   blocking stdout, `Close` did not release a stalled write. With the pollable
   file, the write returned "file already closed" 1 s after `Close`.
 
+- **The request read stops on cancellation.** A collector that stalls
+  mid-request keeps stdin open, and a blocked read sees no context. `serve`
+  decodes the request in a goroutine and stops waiting when the context ends;
+  the abandoned read ends with the process.
+
 - `SIGKILL` cannot be handled. A killed `serve` can leave one
   `agentsview-sqlite-snapshot-*` directory in the remote temp directory. This
   is listed under Limits.
@@ -283,6 +288,14 @@ Retention is therefore based on idle time, not on the newest version:
 - Retention is best effort. The new binary is already in place, so a removal
   that fails, for example on a directory another install removed first, does
   not fail the install.
+- The probe's check-and-refresh and retention's age-check-and-remove both run
+  under a cache lock, the `.lock` directory, which `mkdir` creates atomically
+  on every platform. So retention cannot remove an identity between another
+  collector's probe and its refresh, and a refreshed identity is safe for 30
+  days. A probe whose refresh fails treats the identity as a miss. A lock
+  older than two minutes belongs to a holder that died and is taken over.
+  Waiting for a held lock is bounded: the probe then goes on without it, and
+  the install skips retention until a later install.
 
 A collector that syncs less than once every 30 days uploads again on its next
 sync.
@@ -406,8 +419,13 @@ includes:
   `channel 0: open failed: ...` and `stdio forwarding failed`
 
 The last case is left as a failure for now because it has not been observed yet.
-The SSH client returns a typed `*SSHCommandError{ExitCode, Stderr, Offline}`,
-and `IsHostUnavailable` reads `Offline` rather than matching text itself.
+The SSH client returns a typed `*CommandError{ExitCode, Stderr, Offline}`, and
+`IsHostUnavailable` reads `Offline` rather than matching text itself.
+
+Provisioning failures after ssh reached the host, such as a release download
+that cannot reach GitHub or a development build for another platform, are a
+typed `*ProvisionError`. It is never offline, even when its cause is a network
+error, and its summary keeps the cause and remedy.
 
 ### Entry points
 
@@ -434,8 +452,8 @@ for daemon-driven SSH sync.
   `zstd.SpeedDefault` unless the benchmark shows a better trade-off.
 - The binary upload stays gzip, as explained under Upload.
 - HTTP remote sync negotiates zstd for archives, with gzip as the fallback,
-  through `Accept-Encoding`; its manifests stay gzip. The collector decodes both
-  transports' zstd archives with the same bounded `NewZstdReader`.
+  through `Accept-Encoding`; its manifests stay gzip. The collector decodes
+  both transports' zstd archives with the same bounded `NewZstdReader`.
 
 ## Limits
 
