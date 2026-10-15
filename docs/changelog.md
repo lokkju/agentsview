@@ -113,10 +113,16 @@ The latest release is
   interrupted by a restart continues where it stopped on the next push instead
   of starting over. Pushes to all three now send the most recently active
   sessions first, so a push that stops early has already delivered your newest
-  work. `--full` still starts over from scratch.
+  work. `--full` still starts over from scratch. A manual DuckDB push that
+  falls back to a rebuild because a reader holds the mirror also continues an
+  earlier such rebuild that ended with session errors.
 
 **Bug fixes**
 
+- A ClickHouse push that restores a wider project scope after a filtered push
+  ended with session errors now runs a full push, so sessions the filtered push
+  removed from the mirror come back. Before, the next push was incremental and
+  left those older sessions missing while reporting success.
 - The Usage page loads faster by starting model comparison alongside totals.
   The pairwise comparison API accepts both sides omitted and selects a default pair.
 - Codex pages from Desktop builds 0.148.0-alpha.15 through 0.154.0-alpha.6.2
