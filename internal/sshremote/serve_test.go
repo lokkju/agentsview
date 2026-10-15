@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -202,7 +203,15 @@ func TestServeArchiveStreamsSessionTar(t *testing.T) {
 		require.NoError(t, err)
 		names = append(names, header.Name)
 	}
-	assert.Contains(t, names, strings.TrimPrefix(sessionPath, "/"))
+	// Entry names are absolute remote paths in tar form: no leading slash on
+	// Unix, a __drive_X prefix on Windows. The part under claudeDir is the
+	// same on both.
+	rel, err := filepath.Rel(filepath.Dir(claudeDir), sessionPath)
+	require.NoError(t, err)
+	want := "/" + filepath.ToSlash(rel)
+	assert.True(t, slices.ContainsFunc(names, func(name string) bool {
+		return strings.HasSuffix(name, want)
+	}), "archive %v has no entry ending in %s", names, want)
 }
 
 func TestClassifyServeError(t *testing.T) {

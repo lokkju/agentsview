@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -158,42 +159,28 @@ func TestReleaseFetcherServerError(t *testing.T) {
 
 func TestReleaseFetcherConcurrentFetchesShareCache(t *testing.T) {
 	const fetchers = 8
-	arrived := make(chan struct{}, fetchers)
-	release := make(chan struct{})
+	var tarballHits atomic.Int64
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v0.45.0/SHA256SUMS", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(sumsLine(sha256Hex(testTarballBytes), testTarballName))
 	})
 	mux.HandleFunc("/v0.45.0/"+testTarballName, func(w http.ResponseWriter, _ *http.Request) {
-		arrived <- struct{}{}
-		<-release
+		tarballHits.Add(1)
 		_, _ = w.Write(testTarballBytes)
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	// Two SSH hosts on one platform can provision at once in a daemon.
 	f := releaseFetcher{BaseURL: srv.URL, CacheDir: t.TempDir()}
 
 	var wg sync.WaitGroup
 	paths := make([]string, fetchers)
 	errs := make([]error, fetchers)
-	finished := make(chan struct{}, fetchers)
 	for i := range fetchers {
 		wg.Go(func() {
 			paths[i], errs[i] = f.Fetch(t.Context(), "0.45.0", platform{"linux", "amd64"})
-			finished <- struct{}{}
 		})
 	}
-	// Hold every download at the server so the fetches overlap. A fetch that
-	// fails before downloading never arrives, so stop waiting when one
-	// finishes early and let the assertions below report its error.
-	for waiting := fetchers; waiting > 0; waiting-- {
-		select {
-		case <-arrived:
-		case <-finished:
-			waiting = 0
-		}
-	}
-	close(release)
 	wg.Wait()
 
 	for i := range fetchers {
@@ -202,6 +189,7 @@ func TestReleaseFetcherConcurrentFetchesShareCache(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, testTarballBytes, got)
 	}
+	assert.Equal(t, int64(1), tarballHits.Load(), "one download serves every fetch")
 	entries, err := os.ReadDir(filepath.Dir(paths[0]))
 	require.NoError(t, err)
 	var names []string

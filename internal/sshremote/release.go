@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"go.kenn.io/kit/atomicfile"
@@ -67,8 +68,21 @@ func releaseFileName(version string, p platform) string {
 
 // Fetch returns the path of a verified tarball for version (without "v").
 // A cached SHA256SUMS is trusted; a cached tarball is re-verified against it.
+// cacheDirLocks serializes fetches that share a release cache directory in
+// this process. One download then serves every waiter, and no fetch opens a
+// file while another replaces it, which Windows refuses.
+var cacheDirLocks sync.Map
+
+func lockCacheDir(dir string) (unlock func()) {
+	value, _ := cacheDirLocks.LoadOrStore(dir, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 func (f releaseFetcher) Fetch(ctx context.Context, version string, p platform) (string, error) {
 	dir := filepath.Join(f.CacheDir, version)
+	defer lockCacheDir(dir)()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create release cache: %w", err)
 	}
