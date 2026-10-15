@@ -1625,16 +1625,20 @@ func TestSessionUsage_MissingSessionRefreshesFromSource(t *testing.T) {
 		name       string
 		apiVersion int
 		syncStatus int
-		noSync     bool
-		ownOnly    bool
-		wantSync   bool
-		wantCode   int
+		// importsOnError models a refresh that stores the parent and then
+		// fails on a child.
+		importsOnError bool
+		noSync         bool
+		ownOnly        bool
+		wantSync       bool
+		wantCode       int
 	}{
-		{"imported", server.APIVersion, http.StatusOK, false, false, true, tokenUseExitOK},
-		{"imported own only", server.APIVersion, http.StatusOK, false, true, true, tokenUseExitOK},
-		{"no source", server.APIVersion, http.StatusInternalServerError, false, false, true, tokenUseExitNotFound},
-		{"no sync", server.APIVersion, http.StatusOK, true, false, false, tokenUseExitNotFound},
-		{"older server", server.TargetedSessionSyncAPIVersion - 1, http.StatusOK, false, false, false, tokenUseExitNotFound},
+		{"imported", server.APIVersion, http.StatusOK, false, false, false, true, tokenUseExitOK},
+		{"imported own only", server.APIVersion, http.StatusOK, false, false, true, true, tokenUseExitOK},
+		{"parent imported before child failed", server.APIVersion, http.StatusInternalServerError, true, false, false, true, tokenUseExitOK},
+		{"no source", server.APIVersion, http.StatusInternalServerError, false, false, false, true, tokenUseExitNotFound},
+		{"no sync", server.APIVersion, http.StatusOK, false, true, false, false, tokenUseExitNotFound},
+		{"older server", server.TargetedSessionSyncAPIVersion - 1, http.StatusOK, false, false, false, false, tokenUseExitNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const id = "codex:new-session"
@@ -1655,6 +1659,7 @@ func TestSessionUsage_MissingSessionRefreshesFromSource(t *testing.T) {
 					}
 					syncInputs = append(syncInputs, in)
 					if tc.syncStatus != http.StatusOK {
+						imported = tc.importsOnError
 						w.WriteHeader(tc.syncStatus)
 						writeJSONResponse(w, `{"detail":"source file not found for codex:new-session"}`)
 						return
@@ -1694,6 +1699,9 @@ func TestSessionUsage_MissingSessionRefreshesFromSource(t *testing.T) {
 			}
 			if tc.syncStatus != http.StatusOK {
 				assert.Contains(t, stderr, "source file not found")
+			}
+			if tc.importsOnError {
+				assert.Contains(t, stderr, "may be incomplete")
 			}
 		})
 	}

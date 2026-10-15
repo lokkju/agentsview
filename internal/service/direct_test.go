@@ -1686,3 +1686,32 @@ func TestDirectBackend_Stats_ArchiveOnlyHostOutcomesUnavailable(t *testing.T) {
 		assert.Contains(t, source.Warnings, provider+" outcomes are unavailable in an archive-only database")
 	}
 }
+
+// An unprefixed ID defaults to Claude, so usage refresh finds the agent whose
+// sources hold it before importing.
+func TestDirectBackend_Sync_UsageRefreshResolvesRawNonClaudeID(t *testing.T) {
+	const thread = "33333333-3333-4333-8333-333333333333"
+	for _, subagents := range []bool{true, false} {
+		t.Run(fmt.Sprint("subagents=", subagents), func(t *testing.T) {
+			codexDir, claudeDir := t.TempDir(), t.TempDir()
+			path := filepath.Join(codexDir, "2026", "09", "24", "rollout-2026-09-24T12-00-00-"+thread+".jsonl")
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+			require.NoError(t, os.WriteFile(path, []byte(testjsonl.JoinJSONL(
+				testjsonl.CodexSessionMetaJSON(thread, "/work/project", "codex_cli_rs", "2026-09-24T04:00:00Z"),
+				`{"type":"response_item","timestamp":"2026-09-24T04:00:01Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}`,
+			)), 0o600))
+			d := dbtest.OpenTestDB(t)
+			engine := sync.NewEngine(t.Context(), d, sync.EngineConfig{
+				AgentDirs: map[parser.AgentType][]string{parser.AgentCodex: {codexDir}, parser.AgentClaude: {claudeDir}},
+				Machine:   "local",
+			})
+			t.Cleanup(engine.Close)
+			svc := service.NewDirectBackend(d, engine)
+
+			detail, err := svc.Sync(t.Context(), service.SyncInput{ID: thread, Subagents: subagents, UsageRefresh: true})
+			require.NoError(t, err)
+			require.NotNil(t, detail)
+			assert.Equal(t, "codex:"+thread, detail.ID)
+		})
+	}
+}

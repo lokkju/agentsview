@@ -789,42 +789,53 @@ func TestSyncSessionWithSubagentsDiscoversOpenCodeFamilyChildrenBeforeStartupSyn
 
 func TestSyncSessionWithSubagentsDiscoversOpenCodeStorageChildrenBeforeStartupSync(t *testing.T) {
 	for _, tt := range openCodeFamilySQLiteCases() {
-		t.Run(tt.name, func(t *testing.T) {
-			root := t.TempDir()
-			database := dbtest.OpenTestDB(t)
-			engine := newOpenCodeFamilySQLiteTestEngine(t, tt.agent, root, database)
-			t.Cleanup(engine.Close)
-			storage := createOpenCodeStorageFixture(t, root)
-			if tt.agent == parser.AgentMiMoCode || tt.agent == parser.AgentIcodemate {
-				storage = createMiMoCodeStorageFixture(t, root)
-			}
-			addSession := func(id, parent string) {
-				storage.writeJSON(t, filepath.Join(root, "storage", storage.sessionSubdir, "proj", id+".json"), map[string]any{
-					"id": id, "parentID": parent, "projectID": "proj", "directory": "/workspace/project-a",
-					"title": id, "time": map[string]any{"created": 1704067200000, "updated": 1704067205000},
-				})
-				storage.addMessage(t, id, id+"-msg", "assistant", 1704067201000, nil)
-				storage.addTextPart(t, id, id+"-msg", id+"-part", id+" reply", 1704067201000)
-			}
-			addSession("parent", "")
-			require.NoError(t, engine.SyncSingleSession(tt.prefix+"parent"))
-			addSession("child", "parent")
-			addSession("grandchild", "child")
-			addSession("unrelated", "")
+		for _, parentFileRemoved := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/parent_file_removed=%t", tt.name, parentFileRemoved), func(t *testing.T) {
+				root := t.TempDir()
+				database := dbtest.OpenTestDB(t)
+				engine := newOpenCodeFamilySQLiteTestEngine(t, tt.agent, root, database)
+				t.Cleanup(engine.Close)
+				storage := createOpenCodeStorageFixture(t, root)
+				if tt.agent == parser.AgentMiMoCode || tt.agent == parser.AgentIcodemate {
+					storage = createMiMoCodeStorageFixture(t, root)
+				}
+				addSession := func(id, parent string) {
+					storage.writeJSON(t, filepath.Join(root, "storage", storage.sessionSubdir, "proj", id+".json"), map[string]any{
+						"id": id, "parentID": parent, "projectID": "proj", "directory": "/workspace/project-a",
+						"title": id, "time": map[string]any{"created": 1704067200000, "updated": 1704067205000},
+					})
+					storage.addMessage(t, id, id+"-msg", "assistant", 1704067201000, nil)
+					storage.addTextPart(t, id, id+"-msg", id+"-part", id+" reply", 1704067201000)
+				}
+				addSession("parent", "")
+				require.NoError(t, engine.SyncSingleSession(tt.prefix+"parent"))
+				addSession("child", "parent")
+				addSession("grandchild", "child")
+				addSession("unrelated", "")
 
-			require.NoError(t, engine.SyncSessionWithSubagentsContext(t.Context(), tt.prefix+"parent"))
-			children, err := database.GetChildSessions(t.Context(), tt.prefix+"parent")
-			require.NoError(t, err)
-			require.Len(t, children, 1)
-			assert.Equal(t, tt.prefix+"child", children[0].ID)
-			grandchildren, err := database.GetChildSessions(t.Context(), children[0].ID)
-			require.NoError(t, err)
-			require.Len(t, grandchildren, 1)
-			assert.Equal(t, tt.prefix+"grandchild", grandchildren[0].ID)
-			unrelated, err := database.GetSession(t.Context(), tt.prefix+"unrelated")
-			require.NoError(t, err)
-			assert.Nil(t, unrelated)
-		})
+				if parentFileRemoved {
+					// The archived parent keeps its row after its source is deleted.
+					require.NoError(t, os.Remove(filepath.Join(root, "storage", storage.sessionSubdir, "proj", "parent.json")))
+				}
+				err := engine.SyncSessionWithSubagentsContext(t.Context(), tt.prefix+"parent")
+				if parentFileRemoved {
+					require.ErrorContains(t, err, "source file not found")
+				} else {
+					require.NoError(t, err)
+				}
+				children, err := database.GetChildSessions(t.Context(), tt.prefix+"parent")
+				require.NoError(t, err)
+				require.Len(t, children, 1)
+				assert.Equal(t, tt.prefix+"child", children[0].ID)
+				grandchildren, err := database.GetChildSessions(t.Context(), children[0].ID)
+				require.NoError(t, err)
+				require.Len(t, grandchildren, 1)
+				assert.Equal(t, tt.prefix+"grandchild", grandchildren[0].ID)
+				unrelated, err := database.GetSession(t.Context(), tt.prefix+"unrelated")
+				require.NoError(t, err)
+				assert.Nil(t, unrelated)
+			})
+		}
 	}
 }
 
