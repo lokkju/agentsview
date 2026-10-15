@@ -165,27 +165,28 @@ func (r rebuildRun) resumableAs(current rebuildRun) bool {
 // rewritten, and the file's fingerprints cannot see in-place edits. A rebuild
 // that ended with session errors is discarded too unless required, so when
 // the mirror needs no rebuild the incremental push handles those sessions.
+// restarted reports that fresh discarded an unfinished rebuild.
 func claimRebuild(
 	ctx context.Context, path string, current rebuildRun, fresh, required bool,
-) (*flock.Flock, *rebuildRun, error) {
+) (lock *flock.Flock, pending *rebuildRun, restarted bool, err error) {
 	workDir, err := ensureMirrorWorkDir(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
-	lock := flock.New(filepath.Join(workDir, filepath.Base(path)+rebuildLockSuffix))
+	lock = flock.New(filepath.Join(workDir, filepath.Base(path)+rebuildLockSuffix))
 	locked, err := lock.TryLock()
 	if err != nil {
-		return nil, nil, fmt.Errorf("locking duckdb mirror %s for rebuild: %w", path, err)
+		return nil, nil, false, fmt.Errorf("locking duckdb mirror %s for rebuild: %w", path, err)
 	}
 	if !locked {
-		return nil, nil, errRebuildLocked
+		return nil, nil, false, errRebuildLocked
 	}
-	pending, err := pendingRebuild(ctx, path, current)
+	pending, err = pendingRebuild(ctx, path, current)
 	if err == nil && pending != nil {
 		switch {
 		case fresh:
 			log.Printf("duckdbsync: --full requested; discarding the unfinished rebuild (%s)", pending.Reason)
-			pending, err = nil, removeRebuildFile(rebuildFilePath(path))
+			pending, restarted, err = nil, true, removeRebuildFile(rebuildFilePath(path))
 		case pending.Errored && !required:
 			log.Printf("duckdbsync: discarding the unfinished rebuild (%s); it ended with session errors and the mirror needs no rebuild",
 				pending.Reason)
@@ -193,9 +194,9 @@ func claimRebuild(
 		}
 	}
 	if err != nil {
-		return nil, nil, errors.Join(err, unlockRebuild(lock))
+		return nil, nil, false, errors.Join(err, unlockRebuild(lock))
 	}
-	return lock, pending, nil
+	return lock, pending, restarted, nil
 }
 
 func unlockRebuild(lock *flock.Flock) error {

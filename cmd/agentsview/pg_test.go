@@ -411,6 +411,65 @@ func TestWritePGPushSummaryReportsResumedSessions(t *testing.T) {
 		"Skipped 7 session(s) already pushed by the unfinished full push")
 }
 
+// Ownership conflicts must not hide how many sessions the unfinished full
+// push already finished.
+func TestWritePGPushSummaryReportsResumedSessionsWithConflicts(t *testing.T) {
+	var out bytes.Buffer
+
+	writeReplicaPushSummary(&out, "PostgreSQL", storage.PushResult{
+		SessionsPushed:   1,
+		SkippedConflicts: 2,
+		SkippedResumed:   7,
+		Duration:         time.Second,
+	})
+
+	got := out.String()
+	assert.Contains(t, got,
+		"Warning: skipped 2 session(s) owned by another PostgreSQL push marker")
+	assert.Contains(t, got,
+		"Skipped 7 session(s) already pushed by the unfinished full push")
+}
+
+// A full push prints why it ran, so a requested full push that discarded an
+// unfinished one says so on the console rather than only in the log.
+func TestWritePGPushSummaryReportsFullPushReason(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		want   string
+	}{
+		{
+			name:   "discarded unfinished run",
+			reason: "requested; discarded an unfinished full push",
+			want:   "PostgreSQL push mode: full (requested; discarded an unfinished full push)",
+		},
+		{
+			name:   "resumed run",
+			reason: "resuming an unfinished full push, started because: PG push marker missing",
+			want:   "PostgreSQL push mode: full (resuming an unfinished full push, started because: PG push marker missing)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			writeReplicaPushSummary(&out, "PostgreSQL", storage.PushResult{
+				SessionsPushed: 3,
+				Full:           true,
+				FullReason:     tt.reason,
+				Duration:       time.Second,
+			})
+			assert.Contains(t, out.String(), tt.want)
+		})
+	}
+
+	var out bytes.Buffer
+	writeReplicaPushSummary(&out, "PostgreSQL", storage.PushResult{
+		SessionsPushed: 3,
+		Duration:       time.Second,
+	})
+	assert.NotContains(t, out.String(), "push mode")
+}
+
 func TestWritePGPushSummaryVectorPhase(t *testing.T) {
 	tests := []struct {
 		name        string

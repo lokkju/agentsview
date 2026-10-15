@@ -193,11 +193,14 @@ func Push(
 		}
 	}()
 	claim := func(required bool) error {
-		claimed, pending, err := claimRebuild(ctx, path, run, full, required)
+		claimed, pending, restarted, err := claimRebuild(ctx, path, run, full, required)
 		if err != nil {
 			return err
 		}
 		lock = claimed
+		if restarted {
+			reason += "; discarded an unfinished rebuild"
+		}
 		if pending != nil {
 			// An unfinished rebuild resumes even when the mirror would now
 			// accept an incremental push, so a requested rebuild still finishes.

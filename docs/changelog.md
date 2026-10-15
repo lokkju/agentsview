@@ -114,6 +114,11 @@ The latest release is
   of starting over. Pushes to all three now send the most recently active
   sessions first, so a push that stops early has already delivered your newest
   work. `--full` still starts over from scratch.
+- Push summaries say why a ClickHouse or PostgreSQL push ran in full, and say
+  `discarded an unfinished full push` when `--full` threw away an interrupted
+  one. A DuckDB rebuild reports `discarded an unfinished rebuild` the same way.
+  A summary that reports ownership conflicts now also shows how many sessions
+  were unchanged, already pushed by the interrupted run, or removed.
 
 **Bug fixes**
 

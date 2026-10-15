@@ -254,7 +254,8 @@ func TestFullPushResumesVectorPhase(t *testing.T) {
 	assert.NotContains(t, exported, interrupted)
 }
 
-// An explicit full push starts over instead of resuming an unfinished one.
+// An explicit full push starts over instead of resuming an unfinished one,
+// and its reason says it discarded that run only when one was waiting.
 func TestRequestedFullPushDiscardsUnfinishedRun(t *testing.T) {
 	f := newResumeFixture(t, "agentsview_push_resume_requested_test")
 	f.killedPush(t)
@@ -262,8 +263,14 @@ func TestRequestedFullPushDiscardsUnfinishedRun(t *testing.T) {
 	res, err := f.sync().Push(t.Context(), true, nil)
 	require.NoError(t, err)
 	assert.True(t, res.Full)
+	assert.Equal(t, "requested; discarded an unfinished full push", res.FullReason)
 	assert.Equal(t, 3, res.SessionsPushed)
 	assert.Zero(t, res.SkippedResumed)
+
+	again, err := f.sync().Push(t.Context(), true, nil)
+	require.NoError(t, err)
+	assert.True(t, again.Full)
+	assert.Empty(t, again.FullReason, "nothing was discarded")
 }
 
 // A full push that ended with session errors does not keep later pushes

@@ -205,7 +205,7 @@ func TestFullPushDiscardsUnfinishedRebuild(t *testing.T) {
 
 	res, err := Push(t.Context(), path, local, "test-machine", storage.MirrorPushOptions{}, true, nil)
 	require.NoError(t, err)
-	assert.Equal(t, "--full requested", res.Diagnostics.RebuildReason)
+	assert.Equal(t, "--full requested; discarded an unfinished rebuild", res.Diagnostics.RebuildReason)
 	assert.Equal(t, resumeSessionCount, res.SessionsPushed)
 	assert.Zero(t, res.Diagnostics.SkippedUnchangedSessions.Total)
 }

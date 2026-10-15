@@ -318,11 +318,13 @@ func (s *Sync) pushWithOptions(
 		}
 		runPending, resumed = false, false
 	}
+	discardedRun := false
 	if resumed && opts.Full {
 		// --full asks for every session to be rewritten, including ones the
 		// unfinished run wrote; its fingerprints cannot see in-place edits.
 		log.Printf("pgsync: full push requested; starting over instead of resuming the unfinished full push (%s)", pendingRun.Reason)
 		resumed = false
+		discardedRun = true
 	}
 	switch {
 	case resumed:
@@ -393,7 +395,10 @@ func (s *Sync) pushWithOptions(
 		}
 	}
 	result.Full = full
-	if full && fullReason != "requested" {
+	switch {
+	case discardedRun:
+		result.FullReason = "requested; discarded an unfinished full push"
+	case full && fullReason != "requested":
 		result.FullReason = fullReason
 	}
 	var run *fullPushRunTracker

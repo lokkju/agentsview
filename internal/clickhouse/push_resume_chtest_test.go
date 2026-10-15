@@ -242,7 +242,8 @@ func TestResumedFullPushWritesVectorsForEarlierSessions(t *testing.T) {
 		"the committed session's vectors are pushed too")
 }
 
-// An explicit full push starts over instead of resuming an unfinished one.
+// An explicit full push starts over instead of resuming an unfinished one,
+// and its reason says it discarded that run only when one was waiting.
 func TestRequestedFullPushDiscardsUnfinishedRun(t *testing.T) {
 	ctx := t.Context()
 	local, target := seedFixture(t)
@@ -250,9 +251,13 @@ func TestRequestedFullPushDiscardsUnfinishedRun(t *testing.T) {
 
 	res, err := newTestSync(t, local, target, storage.PusherOptions{}).Push(ctx, true, nil)
 	require.NoError(t, err)
-	assert.Equal(t, "requested", res.FullReason)
+	assert.Equal(t, "requested; discarded an unfinished full push", res.FullReason)
 	assert.Equal(t, 3, res.SessionsPushed)
 	assert.Zero(t, res.SkippedResumed)
+
+	again, err := newTestSync(t, local, target, storage.PusherOptions{}).Push(ctx, true, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "requested", again.FullReason)
 }
 
 // A full push that ended with session errors does not keep later pushes

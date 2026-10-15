@@ -133,11 +133,13 @@ func (s *Sync) PushWithOptions(
 		}
 		pending, resumed = false, false
 	}
+	discardedRun := false
 	if resumed && opts.Full {
 		// --full asks for every session to be rewritten, including ones the
 		// unfinished run wrote; its fingerprints cannot see in-place edits.
 		log.Printf("clickhouse push: full push requested; starting over instead of resuming the unfinished full push (%s)", run.Reason)
 		resumed = false
+		discardedRun = true
 	}
 	switch {
 	case resumed:
@@ -149,6 +151,9 @@ func (s *Sync) PushWithOptions(
 		}
 	}
 	result.Full, result.FullReason = full, reason
+	if discardedRun {
+		result.FullReason = reason + "; discarded an unfinished full push"
+	}
 	if full {
 		log.Printf("clickhouse push: full push (%s)", reason)
 	}
