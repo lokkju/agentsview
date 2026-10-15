@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	stdlibsync "sync"
@@ -927,10 +928,12 @@ func TestRunRemoteSyncRequestLogsPerHostLifecycle(t *testing.T) {
 	f := newSyncRouteFixture(t)
 	logs := captureServerLogOutput(t)
 	privateURL := "http://example.invalid/private/archive?token=secret-token"
-	// Provisioning runs first on every SSH sync, and this error has no
-	// summary of its own.
-	provisionErr := errors.New("no agentsview release matches this build (dev) " +
-		"for remote platform linux/arm64; install agentsview on the remote or sync from a release build")
+	// Provisioning runs first on every SSH sync. Its failures carry their own
+	// summary so the user sees the remedy.
+	provisionErr := &sshremote.ProvisionError{Err: errors.New(
+		"no agentsview release matches this build (dev) for remote platform " +
+			"linux/arm64; install agentsview on the remote or sync from a release build")}
+	provisionSummary := provisionErr.FailureSummary()
 	stubRunRemoteHostSync(t, func(
 		_ context.Context, rh config.RemoteHost, _ bool,
 	) (remotesync.SyncStats, error) {
@@ -963,7 +966,8 @@ func TestRunRemoteSyncRequestLogsPerHostLifecycle(t *testing.T) {
 	require.Empty(t, response.Error)
 	require.Len(t, response.Failures, 2)
 	assert.Equal(t, "beta", response.Failures[0].Host.Host)
-	assert.Equal(t, "remote sync failed", response.Failures[0].Err)
+	assert.Equal(t, provisionSummary, response.Failures[0].Err)
+	assert.Contains(t, response.Failures[0].Err, "install agentsview on the remote")
 	assert.Equal(t, "gamma", response.Failures[1].Host.Host)
 	assert.Equal(t, "remote sync failed", response.Failures[1].Err)
 	output := logs.String()
@@ -976,11 +980,10 @@ func TestRunRemoteSyncRequestLogsPerHostLifecycle(t *testing.T) {
 	assert.Contains(t, output,
 		"remote sync host started: host=beta transport=ssh full=true")
 	assert.Regexp(t, `remote sync host finished: host=beta transport=ssh[^\n]*`+
-		`outcome=failed error="remote sync failed"`, output)
+		`outcome=failed error="`+regexp.QuoteMeta(provisionSummary)+`"`, output)
 	assert.Regexp(t, `remote sync host finished: host=gamma transport=http[^\n]*`+
 		`outcome=failed error="remote sync failed"`, output)
 	assert.NotContains(t, output, "HTTP remote sync failed")
-	assert.NotContains(t, output, provisionErr.Error())
 	assert.NotContains(t, output, privateURL)
 	assert.NotContains(t, output, "secret-token")
 }
