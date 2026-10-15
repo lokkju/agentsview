@@ -1441,6 +1441,39 @@ func parseAgyReaderParentCascadeID(raw jsontext.Value) string {
 	return canonicalAgyCascadeID(metadata.ParentCascadeID)
 }
 
+// readAgyReaderParentCascadeID reads only the sidecar's top-level agyReader
+// value, skipping the trajectory steps. A missing or unreadable sidecar has
+// no parent link.
+func readAgyReaderParentCascadeID(trajectoryPath string) string {
+	f, err := os.Open(trajectoryPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	dec := jsontext.NewDecoder(io.LimitReader(f, maxTrajectorySidecarBytes))
+	if tok, err := dec.ReadToken(); err != nil || tok.Kind() != '{' {
+		return ""
+	}
+	for dec.PeekKind() == '"' {
+		name, err := dec.ReadToken()
+		if err != nil {
+			return ""
+		}
+		if name.String() != "agyReader" {
+			if err := dec.SkipValue(); err != nil {
+				return ""
+			}
+			continue
+		}
+		raw, err := dec.ReadValue()
+		if err != nil {
+			return ""
+		}
+		return parseAgyReaderParentCascadeID(raw)
+	}
+	return ""
+}
+
 func canonicalAgyCascadeID(value string) string {
 	if len(value) != 36 {
 		return ""

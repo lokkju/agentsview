@@ -20446,6 +20446,17 @@ func lastParsedSourceUUID(
 	return ingest.LastParsedSourceUUID(current, msgs)
 }
 
+// providerRawSessionID strips the agent prefix from a canonical session ID.
+// Canonical DeepSeek Harness IDs escape '~' and '%', but its sources hold the
+// raw ID.
+func providerRawSessionID(def parser.AgentDef, rawID string) string {
+	id := strings.TrimPrefix(rawID, def.IDPrefix)
+	if def.Type == parser.AgentDeepSeekHarness {
+		return parser.DecodeDeepSeekHarnessCanonicalRawID(id)
+	}
+	return id
+}
+
 // FindSourceFile locates the original source file for a
 // session ID. It first checks the stored file_path from the
 // database (handles cases where filename differs from session
@@ -20464,7 +20475,7 @@ func (e *Engine) FindSourceFile(ctx context.Context, sessionID string) string {
 	if !ok {
 		return ""
 	}
-	rawSessionID := strings.TrimPrefix(rawID, def.IDPrefix)
+	rawSessionID := providerRawSessionID(def, rawID)
 	if !def.FileBased {
 		// Crush, Forge, Piebald, Warp, and ZCode are DB-backed providers that
 		// own discovery and source lookup through the provider facade. Their
@@ -20482,7 +20493,7 @@ func (e *Engine) FindSourceFile(ctx context.Context, sessionID string) string {
 		}
 		return ""
 	}
-	bareID := strings.TrimPrefix(rawID, def.IDPrefix)
+	bareID := rawSessionID
 	storedPath := e.db.GetSessionFilePath(ctx, sessionID)
 
 	if f := e.findProviderSourceFile(
@@ -20771,7 +20782,7 @@ func (e *Engine) SourceMtime(ctx context.Context, sessionID string) int64 {
 	if !ok {
 		return 0
 	}
-	rawSessionID := strings.TrimPrefix(rawID, def.IDPrefix)
+	rawSessionID := providerRawSessionID(def, rawID)
 	if !def.FileBased {
 		// Crush, Forge, Piebald, Warp, and ZCode are DB-backed providers:
 		// their per-session source mtime comes from the provider fingerprint

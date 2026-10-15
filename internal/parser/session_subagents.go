@@ -2,8 +2,11 @@ package parser
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -36,22 +39,42 @@ func SubagentTranscriptRoot(agent AgentType, sessionPath string) string {
 			return filepath.Join(filepath.Dir(sessionPath), museSubagentDirName)
 		}
 		return ""
+	// fx, DeepSeek Harness, Antigravity CLI, and Evener children sit beside
+	// their parents under one shared root. Each session keeps its own scope so an
+	// archived child whose source is gone still gets its own search; Paths
+	// lists the shared root only once per refresh.
 	case AgentFx:
-		// fx children are sibling session folders under the same root.
-		if dir := filepath.Dir(sessionPath); filepath.Base(sessionPath) == "events.jsonl" && fxSessionIDValid(filepath.Base(dir)) {
-			return filepath.Dir(dir)
+		if _, ok := fxSharedRoot(sessionPath); ok {
+			return sessionPath
 		}
 		return ""
 	case AgentDeepSeekHarness:
-		// Logs live at <root>/<project>/<id>/session*.jsonl[.zstd]; a child's
-		// project follows its own cwd, so search the whole root.
-		root := filepath.Dir(filepath.Dir(filepath.Dir(sessionPath)))
-		if _, _, _, ok := deepSeekHarnessPathParts(root, sessionPath); ok {
-			return root
+		if _, ok := deepSeekHarnessSharedRoot(sessionPath); ok {
+			return sessionPath
+		}
+		return ""
+	case AgentAntigravityCLI:
+		if _, ok := antigravityCLISharedRoot(sessionPath); ok {
+			return sessionPath
 		}
 		return ""
 	case AgentGoose:
 		if _, _, ok := ParseVirtualSourcePathForBase(sessionPath, GooseDBName); ok {
+			return sessionPath
+		}
+		return ""
+	case AgentCrush:
+		if _, _, ok := ParseVirtualSourcePathForBase(sessionPath, CrushDBName); ok {
+			return sessionPath
+		}
+		return ""
+	case AgentEvener:
+		if _, ok := evenerSharedRoot(sessionPath); ok {
+			return sessionPath
+		}
+		return ""
+	case AgentRooCode:
+		if filepath.Base(sessionPath) == "history_item.json" && filepath.Base(filepath.Dir(filepath.Dir(sessionPath))) == "tasks" {
 			return sessionPath
 		}
 		return ""
@@ -194,16 +217,47 @@ func (d *SubagentTranscriptDiscovery) Paths(ctx context.Context, agent AgentType
 		slices.Sort(paths)
 		return paths, err
 	case AgentFx:
-		return d.descendantPaths(agent, root, rawSessionID, func() (parentLinkInventory, error) {
-			return discoverFxSubagents(ctx, root)
+		shared, _ := fxSharedRoot(sessionPath)
+		return d.descendantPaths(agent, shared, rawSessionID, func() (parentLinkInventory, error) {
+			return discoverFxSubagents(ctx, shared)
 		})
 	case AgentDeepSeekHarness:
-		return d.descendantPaths(agent, root, decodeDeepSeekHarnessCanonicalRawID(rawSessionID), func() (parentLinkInventory, error) {
-			return discoverDeepSeekHarnessSubagents(ctx, root)
+		shared, _ := deepSeekHarnessSharedRoot(sessionPath)
+		return d.descendantPaths(agent, shared, decodeDeepSeekHarnessCanonicalRawID(rawSessionID), func() (parentLinkInventory, error) {
+			return discoverDeepSeekHarnessSubagents(ctx, shared)
+		})
+	case AgentAntigravityCLI:
+		shared, _ := antigravityCLISharedRoot(sessionPath)
+		return d.descendantPaths(agent, shared, rawSessionID, func() (parentLinkInventory, error) {
+			return discoverAntigravityCLISubagents(ctx, shared)
 		})
 	case AgentGoose:
 		dbPath, parentID, _ := ParseVirtualSourcePathForBase(sessionPath, GooseDBName)
-		return gooseDescendantPaths(ctx, dbPath, parentID)
+		conn, err := openGooseDB(dbPath, false)
+		if err != nil {
+			return nil, err
+		}
+		defer conn.Close()
+		columns, err := gooseTableColumns(ctx, conn, "sessions")
+		if err != nil || !columns["parent_session_id"] {
+			return nil, err
+		}
+		return sessionsTableDescendantPaths(ctx, conn, dbPath, parentID, GooseSQLiteVirtualPath)
+	case AgentCrush:
+		dbPath, parentID, _ := ParseVirtualSourcePathForBase(sessionPath, CrushDBName)
+		conn, err := openCrushDB(dbPath, false)
+		if err != nil {
+			return nil, err
+		}
+		defer conn.Close()
+		return sessionsTableDescendantPaths(ctx, conn, dbPath, parentID, VirtualSourcePath)
+	case AgentEvener:
+		shared, _ := evenerSharedRoot(sessionPath)
+		return d.descendantPaths(agent, shared, rawSessionID, func() (parentLinkInventory, error) {
+			return discoverEvenerSubagents(ctx, shared)
+		})
+	case AgentRooCode:
+		return rooCodeChildPaths(sessionPath)
 	case AgentOmnigent:
 		return omnigentDescendantPaths(ctx, sessionPath)
 	case AgentPi, AgentOMP, AgentOMO, AgentStepCode:
@@ -232,7 +286,7 @@ func (d *SubagentTranscriptDiscovery) Paths(ctx context.Context, agent AgentType
 // callers need not search the returned children again.
 func SubagentPathsIncludeDescendants(agent AgentType, sessionPath string) bool {
 	switch agent {
-	case AgentShelley, AgentMuse, AgentFx, AgentDeepSeekHarness, AgentGoose, AgentOmnigent:
+	case AgentShelley, AgentMuse, AgentFx, AgentDeepSeekHarness, AgentAntigravityCLI, AgentEvener, AgentGoose, AgentCrush, AgentOmnigent:
 		return true
 	case AgentOpenCode, AgentKilo, AgentMiMoCode, AgentIcodemate:
 		_, ok := openCodeFamilySubagentRoot(agent, sessionPath)
@@ -391,6 +445,125 @@ func collectMuseDescendantLogs(subagentDir string, paths *[]string) error {
 	return nil
 }
 
+// fxSharedRoot returns the sessions root of <root>/<id>/events.jsonl.
+func fxSharedRoot(sessionPath string) (string, bool) {
+	dir := filepath.Dir(sessionPath)
+	if filepath.Base(sessionPath) != "events.jsonl" || !fxSessionIDValid(filepath.Base(dir)) {
+		return "", false
+	}
+	return filepath.Dir(dir), true
+}
+
+// deepSeekHarnessSharedRoot returns the root of
+// <root>/<project>/<id>/session*.jsonl[.zstd]. A child's project folder follows
+// its own cwd, so discovery searches the whole root.
+func deepSeekHarnessSharedRoot(sessionPath string) (string, bool) {
+	root := filepath.Dir(filepath.Dir(filepath.Dir(sessionPath)))
+	if _, _, _, ok := deepSeekHarnessPathParts(root, sessionPath); !ok {
+		return "", false
+	}
+	return root, true
+}
+
+// antigravityCLISharedRoot returns the root of <root>/conversations/<id>.db
+// or .pb and <root>/implicit/<id>.pb.
+func antigravityCLISharedRoot(sessionPath string) (string, bool) {
+	root := filepath.Dir(filepath.Dir(sessionPath))
+	if _, ok := antigravityCLISessionIDForPath(root, sessionPath); !ok {
+		return "", false
+	}
+	return root, true
+}
+
+// evenerSharedRoot returns the source root of
+// <root>/sessions/<id>.transcript.jsonl or
+// <root>/projects/<project>/sessions/<id>.transcript.jsonl. A child can live in
+// another project, so discovery searches the whole root.
+func evenerSharedRoot(sessionPath string) (string, bool) {
+	sessions := filepath.Dir(sessionPath)
+	if filepath.Base(sessions) != "sessions" {
+		return "", false
+	}
+	root := filepath.Dir(sessions)
+	if projects := filepath.Dir(root); filepath.Base(projects) == "projects" {
+		root = filepath.Dir(projects)
+	}
+	if _, ok := evenerClassifyPath(root, sessionPath, true); !ok {
+		return "", false
+	}
+	return root, true
+}
+
+// rooCodeChildPaths reads the parent's childIds. The parent records every
+// child it spawned there, including children no newTask call names.
+func rooCodeChildPaths(historyPath string) ([]string, error) {
+	data, err := os.ReadFile(historyPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var item rooCodeHistoryItem
+	if err := json.Unmarshal(data, &item); err != nil {
+		return nil, fmt.Errorf("decode Roo Code history item %s: %w", historyPath, err)
+	}
+	tasksDir := filepath.Dir(filepath.Dir(historyPath))
+	var paths []string
+	for _, id := range item.ChildIDs {
+		if !isSafeSinglePathComponent(id) {
+			continue
+		}
+		if path := filepath.Join(tasksDir, id, "history_item.json"); IsRegularFile(path) {
+			paths = append(paths, path)
+		}
+	}
+	slices.Sort(paths)
+	return paths, nil
+}
+
+// discoverEvenerSubagents reads each session's metadata and transcript header.
+// A parent names a child only in a finished delegate result, so a child that
+// is still running is linked from its own records alone.
+func discoverEvenerSubagents(ctx context.Context, root string) (parentLinkInventory, error) {
+	inventory := parentLinkInventory{
+		children: make(map[string][]string),
+		paths:    make(map[string]string),
+	}
+	err := evenerDiscoverEach(ctx, root, func(match singleFileMatch) error {
+		id := strings.TrimSuffix(filepath.Base(match.Path), evenerTranscriptSuffix)
+		parent := readEvenerHeaderParentID(match.Path)
+		if meta, _, err := readEvenerMeta(match.Path); err == nil && meta.ParentSessionID != "" {
+			parent = meta.ParentSessionID
+		}
+		if parent == "" || parent == id || !evenerSafeID(parent) {
+			return nil
+		}
+		inventory.paths[id] = match.Path
+		inventory.children[parent] = append(inventory.children[parent], id)
+		return nil
+	})
+	return inventory, err
+}
+
+// readEvenerHeaderParentID decodes only the transcript's first record.
+func readEvenerHeaderParentID(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	raw, err := jsontext.NewDecoder(f).ReadValue()
+	if err != nil {
+		return ""
+	}
+	var header evenerHeader
+	if err := json.Unmarshal(raw, &header); err != nil || header.Kind != "header" {
+		return ""
+	}
+	return header.ParentSessionID
+}
+
 // discoverFxSubagents reads each session folder's subagent/owner.json, the
 // only record of an fx parent link.
 func discoverFxSubagents(ctx context.Context, root string) (parentLinkInventory, error) {
@@ -449,18 +622,13 @@ func discoverDeepSeekHarnessSubagents(ctx context.Context, root string) (parentL
 	return inventory, nil
 }
 
-// gooseDescendantPaths follows sessions.parent_session_id, which parent
-// parsing never reads.
-func gooseDescendantPaths(ctx context.Context, dbPath, parentID string) ([]string, error) {
-	conn, err := openGooseDB(dbPath, false)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	columns, err := gooseTableColumns(ctx, conn, "sessions")
-	if err != nil || !columns["parent_session_id"] {
-		return nil, err
-	}
+// sessionsTableDescendantPaths follows sessions.parent_session_id, which
+// Goose and Crush parent parsing never reads, through every level below
+// parentID.
+func sessionsTableDescendantPaths(
+	ctx context.Context, conn *sql.DB, dbPath, parentID string,
+	virtualPath func(dbPath, sessionID string) string,
+) ([]string, error) {
 	rows, err := conn.QueryContext(ctx,
 		`WITH RECURSIVE parents AS MATERIALIZED (
 			SELECT CAST(id AS TEXT) AS id, TRIM(parent_session_id) AS parent FROM sessions
@@ -483,7 +651,7 @@ func gooseDescendantPaths(ctx context.Context, dbPath, parentID string) ([]strin
 			return nil, err
 		}
 		if IsValidSessionID(id) {
-			paths = append(paths, GooseSQLiteVirtualPath(dbPath, id))
+			paths = append(paths, virtualPath(dbPath, id))
 		}
 	}
 	return paths, rows.Err()
@@ -535,4 +703,48 @@ func omnigentDescendantPaths(ctx context.Context, sessionPath string) ([]string,
 		}
 	}
 	return paths, rows.Err()
+}
+
+// discoverAntigravityCLISubagents reads agyReader.parentCascadeId from each
+// session's trajectory sidecar, the only record of an Antigravity CLI parent
+// link.
+func discoverAntigravityCLISubagents(ctx context.Context, root string) (parentLinkInventory, error) {
+	inventory := parentLinkInventory{
+		children: make(map[string][]string),
+		paths:    make(map[string]string),
+	}
+	for _, subdir := range []string{"conversations", "implicit"} {
+		dir := filepath.Join(root, subdir)
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return inventory, err
+		}
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return inventory, err
+			}
+			id, ext, ok := antigravityCLIPathID(entry.Name())
+			if entry.IsDir() || !ok {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			if subdir == "conversations" && antigravityCLIConversationSource(root, id) != path {
+				continue
+			}
+			storageID, ok := antigravityCLISessionIDForPath(root, path)
+			if !ok {
+				continue
+			}
+			parent := readAgyReaderParentCascadeID(strings.TrimSuffix(path, ext) + ".trajectory.json")
+			if parent == "" || strings.EqualFold(parent, id) {
+				continue
+			}
+			inventory.paths[storageID] = path
+			inventory.children[parent] = append(inventory.children[parent], storageID)
+		}
+	}
+	return inventory, nil
 }

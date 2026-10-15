@@ -250,6 +250,12 @@ func encodeDeepSeekHarnessCanonicalRawID(rawID string) string {
 	return strings.ReplaceAll(rawID, "~", "%7E")
 }
 
+// DecodeDeepSeekHarnessCanonicalRawID reverses the escaping a canonical
+// DeepSeek Harness session ID applies to its raw ID.
+func DecodeDeepSeekHarnessCanonicalRawID(rawID string) string {
+	return decodeDeepSeekHarnessCanonicalRawID(rawID)
+}
+
 func decodeDeepSeekHarnessCanonicalRawID(rawID string) string {
 	rawID = strings.ReplaceAll(rawID, "%7E", "~")
 	return strings.ReplaceAll(rawID, "%25", "%")
