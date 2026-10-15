@@ -192,7 +192,7 @@ configuration. Seed import and restore generate fresh local authentication and l
 Previously retained raw files are preserved without redaction and may contain
 credentials. Seeded and restored databases are permanently archive-only: foreground starts,
 background starts and restarts do not scan the receiving machine. Ordinary sync,
-source transfers, ChatGPT, Claude.ai and Gemini Apps imports, artifact exchange,
+source transfers over HTTP or SSH, ChatGPT, Claude.ai and Gemini Apps imports, artifact exchange,
 mirror publication and raw-sync watch are refused. Browsing, curation, archive
 import, verification, extraction, backup and explicit reparse remain available. Use a separate data directory to collect new
 local sessions; no runtime flag or config setting disables archive-only mode.

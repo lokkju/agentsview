@@ -10,6 +10,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/remotesync"
 )
 
@@ -32,6 +33,9 @@ func Serve(ctx context.Context, op Op, cfg config.Config, in io.Reader, out io.W
 			"collector speaks remote-sync protocol %d, this agentsview speaks %d",
 			req.ProtocolVersion, remotesync.ProtocolVersion)}
 	}
+	if err := requireSourcePublishing(ctx, cfg); err != nil {
+		return err
+	}
 	zw, err := remotesync.NewZstdWriter(out, serveZstdLevel)
 	if err != nil {
 		return &ServeError{Code: CodeInternal, Message: err.Error()}
@@ -41,6 +45,20 @@ func Serve(ctx context.Context, op Op, cfg config.Config, in io.Reader, out io.W
 	}
 	if err := zw.Close(); err != nil {
 		return &ServeError{Code: CodeInternal, Message: "finish response: " + err.Error()}
+	}
+	return nil
+}
+
+// requireSourcePublishing refuses to publish sources from an archive-only
+// database, as the HTTP remote-sync routes do. The check opens an existing
+// database read-only and creates nothing when there is none.
+func requireSourcePublishing(ctx context.Context, cfg config.Config) error {
+	archiveOnly, err := db.ArchiveOnlyAt(ctx, cfg.DBPath)
+	if err != nil {
+		return &ServeError{Code: CodeInternal, Message: "read archive mode: " + err.Error()}
+	}
+	if archiveOnly {
+		return &ServeError{Code: CodeForbidden, Message: db.ErrArchiveOnly.Error()}
 	}
 	return nil
 }

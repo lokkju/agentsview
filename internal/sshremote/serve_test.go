@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/remotesync"
 	"go.kenn.io/agentsview/internal/testjsonl"
@@ -153,6 +154,56 @@ func TestServeStopsReadingTheRequestWhenCancelled(t *testing.T) {
 	case <-time.After(60 * time.Second): // hang guard; the event is Serve returning
 		require.FailNow(t, "Serve kept reading the request after cancellation")
 	}
+}
+
+func TestServeRefusesAnArchiveOnlyDatabase(t *testing.T) {
+	cfg, claudeDir := serveTestConfig(t)
+	writeServeTestSession(t, claudeDir)
+	// An archive-only database holds another machine's sessions. HTTP refuses
+	// to publish from it, and so must SSH.
+	cfg.DBPath = filepath.Join(t.TempDir(), "sessions.db")
+	archive, err := db.Open(t.Context(), cfg.DBPath)
+	require.NoError(t, err)
+	require.NoError(t, archive.EnableArchiveOnly(t.Context()))
+	require.NoError(t, archive.Close())
+	allowed := remotesync.TargetSet{
+		Dirs: map[parser.AgentType][]string{parser.AgentClaude: {claudeDir}},
+	}
+
+	for _, tt := range []struct {
+		op      Op
+		request serveRequest
+	}{
+		{OpTargets, serveRequest{}},
+		{OpManifest, serveRequest{Targets: &allowed}},
+		{OpArchive, serveRequest{Archive: &remotesync.ArchiveRequest{TargetSet: allowed}}},
+	} {
+		t.Run(string(tt.op), func(t *testing.T) {
+			tt.request.ProtocolVersion = remotesync.ProtocolVersion
+			var out bytes.Buffer
+
+			err := Serve(t.Context(), tt.op, cfg, encodeServeRequest(t, tt.request), &out)
+
+			serveErr, ok := errors.AsType[*ServeError](err)
+			require.True(t, ok, "error %v is not a ServeError", err)
+			assert.Equal(t, CodeForbidden, serveErr.Code)
+			assert.Contains(t, serveErr.Message, db.ErrArchiveOnly.Error())
+			assert.Zero(t, out.Len(), "nothing is published")
+		})
+	}
+}
+
+func TestServeWithoutADatabaseCreatesNone(t *testing.T) {
+	cfg, claudeDir := serveTestConfig(t)
+	writeServeTestSession(t, claudeDir)
+	cfg.DBPath = filepath.Join(t.TempDir(), "sessions.db")
+	var out bytes.Buffer
+
+	err := Serve(t.Context(), OpTargets,
+		cfg, encodeServeRequest(t, serveRequest{ProtocolVersion: remotesync.ProtocolVersion}), &out)
+
+	require.NoError(t, err)
+	assert.NoFileExists(t, cfg.DBPath)
 }
 
 func TestServeRejectsMalformedRequest(t *testing.T) {

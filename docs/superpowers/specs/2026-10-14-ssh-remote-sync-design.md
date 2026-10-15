@@ -104,7 +104,10 @@ status codes and headers.
 
 - Load configuration with `config.LoadReadOnly()`. It writes no config
   migrations, secrets, or installation identity.
-- Do not open or create `sessions.db` or the data directory.
+- Do not open or create `sessions.db` or the data directory. The one exception
+  is a read-only check of an existing `sessions.db`: like the HTTP remote-sync
+  routes, `serve` refuses with `forbidden` when that database is archive-only,
+  so a seeded or restored archive never publishes its sources.
 - Do not start a daemon, watchers, pollers, telemetry, or update checks. The
   command path must bypass any CLI start-up hook that does these.
 - Write SQLite snapshots to an `os.MkdirTemp` directory and remove it before
