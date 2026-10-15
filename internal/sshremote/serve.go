@@ -1,0 +1,92 @@
+package sshremote
+
+import (
+	"context"
+	"encoding/json/v2"
+	"errors"
+	"fmt"
+	"io"
+
+	"github.com/klauspost/compress/zstd"
+
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/remotesync"
+)
+
+// serveZstdLevel is chosen from the benchmark in bench_test.go; the pull
+// request records the measurements.
+const serveZstdLevel = zstd.SpeedDefault
+
+// maxServeRequestBytes bounds the request; delta file lists are the largest.
+const maxServeRequestBytes = 64 << 20
+
+// Serve runs one operation. It reads the JSON request from in and writes the
+// zstd-compressed response to out. Failures are *ServeError values.
+func Serve(ctx context.Context, op Op, cfg config.Config, in io.Reader, out io.Writer) error {
+	var req serveRequest
+	if err := json.UnmarshalRead(io.LimitReader(in, maxServeRequestBytes), &req); err != nil {
+		return &ServeError{Code: CodeInternal, Message: "decode request: " + err.Error()}
+	}
+	if req.ProtocolVersion != remotesync.ProtocolVersion {
+		return &ServeError{Code: CodeIncompatibleProtocol, Message: fmt.Sprintf(
+			"collector speaks remote-sync protocol %d, this agentsview speaks %d",
+			req.ProtocolVersion, remotesync.ProtocolVersion)}
+	}
+	zw, err := remotesync.NewZstdWriter(out, serveZstdLevel)
+	if err != nil {
+		return &ServeError{Code: CodeInternal, Message: err.Error()}
+	}
+	if err := serveOp(ctx, op, cfg, req, zw); err != nil {
+		return classifyServeError(err)
+	}
+	if err := zw.Close(); err != nil {
+		return &ServeError{Code: CodeInternal, Message: "finish response: " + err.Error()}
+	}
+	return nil
+}
+
+func serveOp(ctx context.Context, op Op, cfg config.Config, req serveRequest, out io.Writer) error {
+	switch op {
+	case OpTargets:
+		targets, err := remotesync.ResolveTargets(cfg)
+		if err != nil {
+			return fmt.Errorf("resolve targets: %w", err)
+		}
+		return json.MarshalWrite(out, targets)
+	case OpManifest:
+		if req.Targets == nil {
+			return errors.New("manifest request has no targets")
+		}
+		manifest, err := remotesync.ServeManifest(ctx, cfg, *req.Targets)
+		if err != nil {
+			return err
+		}
+		return json.MarshalWrite(out, manifest)
+	case OpArchive:
+		if req.Archive == nil {
+			return errors.New("archive request has no body")
+		}
+		plan, err := remotesync.PlanArchive(cfg, *req.Archive)
+		if err != nil {
+			return err
+		}
+		return plan.Write(ctx, out)
+	default:
+		return fmt.Errorf("unknown remote-sync operation %q", op)
+	}
+}
+
+func classifyServeError(err error) *ServeError {
+	if serveErr, ok := errors.AsType[*ServeError](err); ok {
+		return serveErr
+	}
+	code := CodeInternal
+	switch {
+	case errors.Is(err, remotesync.ErrTargetNotAllowed),
+		errors.Is(err, remotesync.ErrFileNotAllowed):
+		code = CodeForbidden
+	case errors.Is(err, remotesync.ErrManifestUnsupported):
+		code = CodeUnsupported
+	}
+	return &ServeError{Code: code, Message: err.Error()}
+}

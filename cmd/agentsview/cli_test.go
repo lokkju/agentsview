@@ -422,6 +422,8 @@ func TestRootHelpDocumentsRemoteHosts(t *testing.T) {
 		"remote_hosts",
 		"remote-token",
 		"transport = \"http\"",
+		"transport = \"ssh\"",
+		"destination",
 		"daemon_idle_timeout",
 		"Top-level daemon_idle_timeout",
 		"Tailscale",
@@ -434,13 +436,15 @@ func TestRootHelpDocumentsRemoteHosts(t *testing.T) {
 func TestSyncHelpMentionsConfiguredHosts(t *testing.T) {
 	help, err := executeCommand(newRootCommand(), "sync", "--help")
 	require.NoError(t, err, "Execute")
-	for _, want := range []string{"remote_hosts", "--host", "HTTP URL", "auth token"} {
+	for _, want := range []string{
+		"remote_hosts", "--host", "auth token", "transport = \"ssh\"", "destination",
+	} {
 		assert.Contains(t, help, want, "sync help missing %q", want)
 	}
 }
 
-func TestSyncHelpHostFlagDescribesConfiguredHTTPHost(t *testing.T) {
+func TestSyncHelpHostFlagDescribesConfiguredHost(t *testing.T) {
 	help, err := executeCommand(newRootCommand(), "sync", "--help")
 	require.NoError(t, err, "Execute")
-	assert.Contains(t, help, "Configured HTTP host name")
+	assert.Contains(t, help, "Configured remote host name")
 }
