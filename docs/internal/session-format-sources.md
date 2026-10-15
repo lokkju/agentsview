@@ -1,5 +1,5 @@
 ---
-last_edited: 2026-10-14
+last_edited: 2026-10-15
 ---
 
 # Session Format Source Inventory
@@ -214,10 +214,10 @@ fixtures retain this field; missing identities remain source-local.
   continuations and their companions into one source. Reparse preserves either
   seed transcript's stored path and refuses replacement if a recorded
   contributor is absent. Hosted capture plans and watcher discovery are
-  unchanged. Scoped discovery covers each affected project under its configured
-  root so companion transcripts remain in scope.
-  Rechecked 2026-10-14 with discovery fixtures: a project that vanishes or becomes
-  a file during raw-capture enumeration makes discovery incomplete even if it
+  unchanged. Scoped discovery covers each affected project under its
+  configured root so companion transcripts remain in scope. Rechecked
+  2026-10-14 with discovery fixtures: a project that vanishes or becomes a
+  file during raw-capture enumeration makes discovery incomplete even if it
   returns before enumeration ends. Scoped reconciliation accepts missing paths
   as absence.
 
@@ -588,6 +588,20 @@ fixtures retain this field; missing identities remain source-local.
   using the same selection rule as descendant discovery. Descendant refresh
   indexes each matching S3 root once and imports the selected objects.
 
+- **Child-link discovery check (2026-10-15):** Children that name their parent
+  only in `session_meta` are found by reading the first line of each rollout
+  in the dated day folders from the parent's start through its last write, one
+  day wider on each side. A revert page keeps the thread ID in
+  `session_meta.id` (see revert rollouts below), so discovery keys each
+  rollout by its file name and links a page to the rollout it continues, as
+  parsing does. An archived parent searches the sibling `sessions/` tree from
+  its archived start time. A retained session whose source is gone uses its
+  archived end time as the last write. The undated `archived_sessions/` folder
+  is not searched. TraeX and Augure Code share this layout and discovery.
+  Synthetic rollouts in
+  `internal/sync/session_subagents_first_use_external_test.go` cover each
+  case.
+
 - **Revert rollouts (checked 2026-09-29 at rust-v0.154.0):** Only
   `thread/revert` writes a rollout named
   `rollout-<ts>-<thread>_<rollout>.jsonl`
@@ -733,21 +747,21 @@ fixtures retain this field; missing identities remain source-local.
   [recorder.rs](https://github.com/openai/codex/blob/rust-v0.148.0-alpha.15/codex-rs/rollout/src/recorder.rs#L818-L820)
   (rust-v0.148.0-alpha.15, checked 2026-10-04) only writes the thread id as
   `conversation_id`. It does not produce this reversed header, so the reversed
-  shape and its version range come from local files and are `no-public-source`.
-  The `id` rule in the
-  entry above describes rust-v0.154.0 and later. AgentsView accepts the
-  older header only when the file name is `<session_id>_<id>`, and stores the page under the
-  file-name key like any other revert page. Data version 134 rebuilds archives
-  that stored such pages as `codex:<rollout>`, moving curation, trash, and
-  deletions to the canonical page whether its file is present or gone.
-  Tests: `TestCodexOlderHeaderRevertPageUpgradeMovesCuration`,
+  shape and its version range come from local files and are
+  `no-public-source`. The `id` rule in the entry above describes rust-v0.154.0
+  and later. AgentsView accepts the older header only when the file name is
+  `<session_id>_<id>`, and stores the page under the file-name key like any
+  other revert page. Data version 134 rebuilds archives that stored such pages
+  as `codex:<rollout>`, moving curation, trash, and deletions to the canonical
+  page whether its file is present or gone. Tests:
+  `TestCodexOlderHeaderRevertPageUpgradeMovesCuration`,
   `TestCodexOlderHeaderRevertPageSecondSyncReparsesNothing`,
   `TestCodexOlderHeaderRevertPageTitleAndSubagent`,
   `TestCodexLegacyHeaderPageMovesToCanonicalPostgresRow`,
   `TestCodexPurgedRolloutExclusionBlocksCanonicalPage`,
   `TestPGSessionTombstoneIDsIncludeRetiredCodexRollout`,
-  `TestCodexRevertPageSessionsThroughAPI`,
-  `TestCodexRevertPagesFormATree`, `TestCodexRevertPagesRetainDailyUsage`,
+  `TestCodexRevertPageSessionsThroughAPI`, `TestCodexRevertPagesFormATree`,
+  `TestCodexRevertPagesRetainDailyUsage`,
   `TestCodexRevertPageUpgradeReplacesStaleThreadRow`,
   `TestCopySessionMetadataFrom_CodexPagePins`,
   `TestCodexPageUpgradePreservesPostgresPins`,
@@ -3344,12 +3358,11 @@ schemas keep their existing ordering behavior.
   by project, machine, home and job ID. The pinned recognizer's legacy `job-1`
   example was reverified on 2026-10-09. The `home scopes` subtest of
   `TestHermesCronStateGroups` verifies that rewritten Windows paths keep
-  distinct homes separate by accepting both path separators. Names derive
-  from the recorded `session_name` at read time; usage-only archives show job
-  IDs because their titles are discarded. Resync copies preserve stored job
-  IDs, including imported sessions. Archived runs whose sources were gone
-  before upgrading stay individual sessions unless they already have a stored
-  job ID.
+  distinct homes separate by accepting both path separators. Names derive from
+  the recorded `session_name` at read time; usage-only archives show job IDs
+  because their titles are discarded. Resync copies preserve stored job IDs,
+  including imported sessions. Archived runs whose sources were gone before
+  upgrading stay individual sessions unless they already have a stored job ID.
 - **Agentsview:** `internal/parser/hermes.go` and
   `internal/parser/hermes_provider.go`; database and file generations are both
   recognized. Transcript projects use `platform`. A non-empty `state.db`

@@ -935,7 +935,7 @@ func TestSyncArchivedS3IcodemateParentPreservesChildAgentAndIDNamespace(
 		fetchS3Object = oldFetch
 		statClaudeS3Session = oldStat
 	})
-	subagentTranscriptPaths = func(_ *parser.SubagentTranscriptDiscovery, _ context.Context, _ parser.AgentType, got, _ string) ([]string, error) {
+	subagentTranscriptPaths = func(_ *parser.SubagentTranscriptDiscovery, _ context.Context, _ parser.AgentType, got, _ string, _, _ time.Time) ([]string, error) {
 		require.Equal(t, parentPath, got)
 		return []string{childPath}, nil
 	}

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
 )
 
@@ -68,7 +70,7 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 			if s3ParentID != "" {
 				err = e.SyncS3SubagentTranscriptsContext(ctx, s3ParentID, parser.AgentCodex, []string{path})
 			} else {
-				err = e.SyncSingleSessionForUsageContext(ctx, id)
+				err = e.SyncSingleSessionForUsageContext(ctx, id, path)
 			}
 			refreshErr = errors.Join(refreshErr, err)
 			if errors.Is(err, ErrSyncInProgress) {
@@ -90,7 +92,11 @@ func (e *Engine) SyncSessionWithSubagentsContext(ctx context.Context, sessionID 
 		if root := discovery.transcriptRoot(agent, path); root != "" && !discoveredRoots[root] {
 			discoveredRoots[root] = true
 			var paths []string
-			discovered, err := discovery.transcriptPaths(ctx, agent, path, root, rawSessionID)
+			started, lastWrite, err := e.archivedSessionTimes(ctx, id)
+			if err != nil {
+				return errors.Join(refreshErr, err)
+			}
+			discovered, err := discovery.transcriptPaths(ctx, agent, path, root, rawSessionID, started, lastWrite)
 			refreshErr = errors.Join(refreshErr, err)
 			for _, childPath := range discovered {
 				if childRoot := discovery.transcriptRoot(agent, childPath); childRoot != "" && (parser.SubagentPathsIncludeDescendants(agent, path) || samePathOrDescendant(childRoot, root)) {
@@ -193,9 +199,12 @@ func (d *subagentSourceDiscovery) transcriptRoot(agent parser.AgentType, path st
 	return parser.SubagentTranscriptRoot(agent, path)
 }
 
-func (d *subagentSourceDiscovery) transcriptPaths(ctx context.Context, agent parser.AgentType, path, root, rawSessionID string) ([]string, error) {
+func (d *subagentSourceDiscovery) transcriptPaths(
+	ctx context.Context, agent parser.AgentType, path, root, rawSessionID string,
+	started, lastWrite time.Time,
+) ([]string, error) {
 	if agent != parser.AgentCursor || !isS3SourcePath(path) {
-		return subagentTranscriptPaths(&d.local, ctx, agent, path, rawSessionID)
+		return subagentTranscriptPaths(&d.local, ctx, agent, path, rawSessionID, started, lastWrite)
 	}
 	sourceRoot := d.cursorSourceRoot(path)
 	inventory, listed := d.cursorS3[sourceRoot]
@@ -205,4 +214,21 @@ func (d *subagentSourceDiscovery) transcriptPaths(ctx context.Context, agent par
 		d.cursorS3[sourceRoot] = inventory
 	}
 	return inventory[root], err
+}
+
+// archivedSessionTimes reads a session's stored start and end times after its
+// refresh, so date-filed child searches survive a missing source.
+func (e *Engine) archivedSessionTimes(ctx context.Context, id string) (started, ended time.Time, err error) {
+	session, err := e.db.GetSession(ctx, id)
+	if err != nil || session == nil {
+		return time.Time{}, time.Time{}, err
+	}
+	parse := func(value *string) time.Time {
+		if value == nil {
+			return time.Time{}
+		}
+		t, _ := db.ParseStoredTimestamp(*value)
+		return t
+	}
+	return parse(session.StartedAt), parse(session.EndedAt), nil
 }

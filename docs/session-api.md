@@ -1064,11 +1064,11 @@ The codes classify the reported document, so a session whose only token data
 lives in its subagents exits `0`, not `3`. With `--own-only` it exits `3`, as it
 did before.
 
-Before querying, the local backend refreshes the session's own transcript and
-the `agent-*.jsonl` files under its `subagents/` directory, so a session that
-just finished reports complete numbers. With `--own-only`, queries refresh only
-the named transcript. Stale archives skip the refresh and show stored usage with
-a warning to run `agentsview resync`. Servers below API 12 skip targeted refresh
+Before querying, the command refreshes the session's own transcript and the
+subagent sessions it can find from its source, so a session that just finished
+reports complete numbers. With `--own-only`, queries refresh only the named
+transcript. Stale archives skip the refresh and show stored usage with a warning
+to run `agentsview resync`. Servers below API 13 skip targeted refresh
 with a warning to restart or upgrade. Servers newer than this client require a
 client upgrade before querying usage.
 

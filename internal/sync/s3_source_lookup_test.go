@@ -116,7 +116,8 @@ func TestSyncSingleSessionFirstUseS3Source(t *testing.T) {
 		assert.Empty(t, fetched)
 	})
 	t.Run("refresh ingests only requested canonical session", func(t *testing.T) {
-		require.NoError(t, engine.SyncSingleSessionForUsageContext(t.Context(), sessionID))
+		sourcePath := engine.FindSourceFile(t.Context(), sessionID)
+		require.NoError(t, engine.SyncSingleSessionForUsageContext(t.Context(), sessionID, sourcePath))
 		session, err := database.GetSessionFull(t.Context(), sessionID)
 		require.NoError(t, err)
 		require.NotNil(t, session)
@@ -137,6 +138,7 @@ func TestSyncSingleSessionFirstUseS3Source(t *testing.T) {
 		assert.Equal(t, sessionID, page.Sessions[0].ID)
 		mu.Lock()
 		defer mu.Unlock()
+		assert.Len(t, listed, 2, "the refresh reuses its located source instead of listing the root again")
 		assert.Equal(t, []string{
 			"/bucket/" + key,
 			"/bucket/host-a/raw/codex/session_index.jsonl",
@@ -144,7 +146,7 @@ func TestSyncSingleSessionFirstUseS3Source(t *testing.T) {
 	})
 	t.Run("unconfigured machine stays unresolved", func(t *testing.T) {
 		assert.Empty(t, engine.FindSourceFile(t.Context(), "host-c~codex:"+rawID))
-		err := engine.SyncSingleSessionForUsageContext(t.Context(), "host-c~codex:"+rawID)
+		err := engine.SyncSingleSessionForUsageContext(t.Context(), "host-c~codex:"+rawID, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "cannot sync remote session")
 	})

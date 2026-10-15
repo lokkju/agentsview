@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/sync"
@@ -38,6 +39,8 @@ func TestSyncSessionWithSubagentsDiscoversChildLinkedRecordsBeforeStartupSync(t 
 		{name: "omnigent", agent: parser.AgentOmnigent, prefix: "omnigent:0:", newRecords: newOmnigentFirstUseRecords},
 		{name: "antigravity cli", agent: parser.AgentAntigravityCLI, prefix: "antigravity-cli:", newRecords: newAntigravityCLIFirstUseRecords},
 		{name: "codex", agent: parser.AgentCodex, prefix: "codex:", newRecords: newCodexFirstUseRecords},
+		{name: "traex", agent: parser.AgentTraeX, prefix: "traex:", newRecords: newCodexFirstUseRecords},
+		{name: "augure code", agent: parser.AgentAugureCode, prefix: "augure-code:", newRecords: newCodexFirstUseRecords},
 	} {
 		for _, childSourceRemoved := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/child_source_removed=%t", tc.name, childSourceRemoved), func(t *testing.T) {
@@ -84,6 +87,109 @@ func TestSyncSessionWithSubagentsDiscoversChildLinkedRecordsBeforeStartupSync(t 
 			})
 		}
 	}
+}
+
+// Codex child discovery must survive revert pages that share a child's thread
+// ID, parents that were archived, and intermediates whose source is gone.
+func TestSyncSessionWithSubagentsCodexChildEdgesBeforeStartupSync(t *testing.T) {
+	const (
+		parent     = "019a0000-0000-7000-8000-0000000000a1"
+		child      = "019a0000-0000-7000-8000-0000000000a2"
+		grandchild = "019a0000-0000-7000-8000-0000000000a3"
+		rollout    = "019a0000-0000-7000-8000-0000000000b1"
+	)
+	type codexRollout struct{ dir, name, content string }
+	write := func(t *testing.T, r codexRollout) string {
+		t.Helper()
+		require.NoError(t, os.MkdirAll(r.dir, 0o755))
+		path := filepath.Join(r.dir, r.name)
+		require.NoError(t, os.WriteFile(path, []byte(r.content), 0o600))
+		return path
+	}
+	rolloutName := func(day, clock, key string) string {
+		return "rollout-2026-09-" + day + "T" + clock + "-" + key + ".jsonl"
+	}
+	meta := func(id, parentID, ts string) string {
+		if parentID == "" {
+			return testjsonl.CodexSessionMetaJSON(id, "/work/project", "codex_cli_rs", ts)
+		}
+		return testjsonl.CodexSubagentSessionMetaVariantJSON(
+			"guardian_review", map[string]any{"other": "guardian"},
+			id, parentID, "/work/project", "codex_cli_rs", ts,
+		)
+	}
+	transcript := func(metaLine string, timestamps ...string) string {
+		lines := []string{metaLine}
+		for _, ts := range timestamps {
+			lines = append(lines, testjsonl.CodexMsgJSON("user", "prompt at "+ts, ts))
+		}
+		return testjsonl.JoinJSONL(lines...)
+	}
+	newEngine := func(t *testing.T, roots ...string) (*sync.Engine, *db.DB) {
+		t.Helper()
+		database := dbtest.OpenTestDB(t)
+		engine := sync.NewEngine(t.Context(), database, sync.EngineConfig{
+			AgentDirs:                  map[parser.AgentType][]string{parser.AgentCodex: roots},
+			Machine:                    "local",
+			DisableSignalRecomputation: true,
+		})
+		t.Cleanup(engine.Close)
+		return engine, database
+	}
+	childIDs := func(t *testing.T, database *db.DB, id string) []string {
+		t.Helper()
+		children, err := database.GetChildSessions(t.Context(), id)
+		require.NoError(t, err)
+		ids := make([]string, 0, len(children))
+		for _, c := range children {
+			ids = append(ids, c.ID)
+		}
+		return ids
+	}
+
+	t.Run("revert page in the child's day folder", func(t *testing.T) {
+		root := t.TempDir()
+		day := filepath.Join(root, "2026", "09", "10")
+		write(t, codexRollout{day, rolloutName("10", "10-00-00", parent), transcript(meta(parent, "", "2026-09-10T10:00:00Z"), "2026-09-10T10:00:00Z")})
+		write(t, codexRollout{day, rolloutName("10", "10-05-00", child), transcript(meta(child, parent, "2026-09-10T10:05:00Z"), "2026-09-10T10:05:00Z")})
+		page := testjsonl.CodexSessionMetaWithFieldsJSON(child, "/work/project", "codex_cli_rs", "2026-09-10T11:00:00Z", map[string]any{
+			"history_mode": "paginated",
+			"history_base": map[string]any{"thread_id": child},
+		})
+		write(t, codexRollout{day, rolloutName("10", "11-00-00", child+"_"+rollout), transcript(page, "2026-09-10T11:00:00Z")})
+		engine, database := newEngine(t, root)
+
+		require.NoError(t, engine.SyncSessionWithSubagentsContext(t.Context(), "codex:"+parent))
+		assert.Equal(t, []string{"codex:" + child}, childIDs(t, database, "codex:"+parent))
+		assert.Equal(t, []string{"codex:" + child + "_" + rollout}, childIDs(t, database, "codex:"+child))
+	})
+
+	t.Run("archived parent searches the dated sessions folder", func(t *testing.T) {
+		home := t.TempDir()
+		sessions, archived := filepath.Join(home, "sessions"), filepath.Join(home, "archived_sessions")
+		write(t, codexRollout{archived, rolloutName("10", "10-00-00", parent), transcript(meta(parent, "", "2026-09-10T10:00:00Z"), "2026-09-10T10:00:00Z")})
+		write(t, codexRollout{filepath.Join(sessions, "2026", "09", "10"), rolloutName("10", "10-05-00", child), transcript(meta(child, parent, "2026-09-10T10:05:00Z"), "2026-09-10T10:05:00Z")})
+		engine, database := newEngine(t, sessions, archived)
+
+		require.NoError(t, engine.SyncSessionWithSubagentsContext(t.Context(), "codex:"+parent))
+		assert.Equal(t, []string{"codex:" + child}, childIDs(t, database, "codex:"+parent))
+	})
+
+	t.Run("missing intermediate keeps its archived last write", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, codexRollout{filepath.Join(root, "2026", "09", "10"), rolloutName("10", "10-00-00", parent), transcript(meta(parent, "", "2026-09-10T10:00:00Z"), "2026-09-10T10:00:00Z")})
+		childTranscript := transcript(meta(child, parent, "2026-09-10T10:05:00Z"), "2026-09-10T10:05:00Z", "2026-09-14T09:00:00Z")
+		childPath := write(t, codexRollout{filepath.Join(root, "2026", "09", "10"), rolloutName("10", "10-05-00", child), childTranscript})
+		engine, database := newEngine(t, root)
+		require.NoError(t, engine.SyncSingleSession("codex:"+parent))
+		require.NoError(t, engine.SyncSingleSession("codex:"+child))
+		write(t, codexRollout{filepath.Join(root, "2026", "09", "14"), rolloutName("14", "09-00-00", grandchild), transcript(meta(grandchild, child, "2026-09-14T09:00:00Z"), "2026-09-14T09:00:00Z")})
+		require.NoError(t, os.Remove(childPath))
+
+		// The removed child's own refresh may report its missing source.
+		_ = engine.SyncSessionWithSubagentsContext(t.Context(), "codex:"+parent)
+		assert.Equal(t, []string{"codex:" + grandchild}, childIDs(t, database, "codex:"+child))
+	})
 }
 
 // Canonical DeepSeek Harness IDs escape '~' and '%', which the source folder

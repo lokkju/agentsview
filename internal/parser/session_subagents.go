@@ -23,12 +23,10 @@ func SubagentTranscriptRoot(agent AgentType, sessionPath string) string {
 		return ""
 	}
 	switch agent {
-	case AgentCodex:
-		if _, ok := codexDatedDay(sessionPath); ok {
+	case AgentCodex, AgentTraeX, AgentAugureCode:
+		if _, ok := codexChildSearchRoot(sessionPath); ok {
 			return sessionPath
 		}
-		return ""
-	case AgentTraeX, AgentAugureCode:
 		return ""
 	case AgentGrok:
 		if filepath.Base(sessionPath) == "summary.json" {
@@ -161,15 +159,20 @@ func (d *SubagentTranscriptDiscovery) descendantPaths(
 }
 
 // Paths discovers children within the requested session's source tree.
-// rawSessionID keeps retained storage parents reachable after their source disappears.
-func (d *SubagentTranscriptDiscovery) Paths(ctx context.Context, agent AgentType, sessionPath, rawSessionID string) ([]string, error) {
+// rawSessionID keeps retained storage parents reachable after their source
+// disappears. started and lastWrite are the archived session times, which
+// bound date-filed searches when the path or source cannot.
+func (d *SubagentTranscriptDiscovery) Paths(
+	ctx context.Context, agent AgentType, sessionPath, rawSessionID string,
+	started, lastWrite time.Time,
+) ([]string, error) {
 	root := SubagentTranscriptRoot(agent, sessionPath)
 	if root == "" {
 		return nil, nil
 	}
 	switch agent {
-	case AgentCodex:
-		return d.codexChildPaths(ctx, sessionPath, rawSessionID)
+	case AgentCodex, AgentTraeX, AgentAugureCode:
+		return d.codexChildPaths(ctx, agent, sessionPath, rawSessionID, started, lastWrite)
 	case AgentGrok:
 		return grokSubagentChildPaths(root)
 	case AgentWorkBuddy:
@@ -621,26 +624,70 @@ func codexDatedDay(sessionPath string) (time.Time, bool) {
 	return day, err == nil
 }
 
+// codexChildSearchRoot returns the dated sessions folder that holds a local
+// rollout's children. An archived rollout's children stay in the sibling
+// sessions folder unless they were archived too.
+func codexChildSearchRoot(sessionPath string) (string, bool) {
+	if _, ok := codexDatedDay(sessionPath); ok {
+		return filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(sessionPath)))), true
+	}
+	if strings.Contains(sessionPath, "://") || !isCodexSessionFilename(filepath.Base(sessionPath)) {
+		return "", false
+	}
+	dir := filepath.Dir(sessionPath)
+	switch filepath.Base(dir) {
+	case "archived_sessions":
+		return filepath.Join(filepath.Dir(dir), "sessions"), true
+	case "sessions":
+		return dir, true
+	}
+	return "", false
+}
+
+// codexCalendarDay returns the local calendar day of t, matching the day
+// folders Codex writes.
+func codexCalendarDay(t time.Time) time.Time {
+	t = t.Local()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
 // codexChildPaths finds rollouts whose session_meta names parentID.
 // Guardian-review and similar children record their parent only there, so
 // the parent never names them. A child starts after its parent, so the search
 // covers the day folders from the parent's start through its last write,
-// widened by a day on each side because folder dates use local time. The
-// undated archived_sessions folder is not searched.
-func (d *SubagentTranscriptDiscovery) codexChildPaths(ctx context.Context, sessionPath, parentID string) ([]string, error) {
-	start, _ := codexDatedDay(sessionPath)
+// widened by a day on each side because folder dates use local time. A dated
+// rollout names its start day; otherwise the archived start time does. The
+// last write is the later of the source mtime and the archived end time, so a
+// retained session whose source is gone keeps its full window. The undated
+// archived_sessions folder is not searched.
+func (d *SubagentTranscriptDiscovery) codexChildPaths(
+	ctx context.Context, agent AgentType, sessionPath, parentID string,
+	started, lastWrite time.Time,
+) ([]string, error) {
+	sessionsRoot, ok := codexChildSearchRoot(sessionPath)
+	if !ok {
+		return nil, nil
+	}
+	start, dated := codexDatedDay(sessionPath)
+	if !dated {
+		if started.IsZero() {
+			return nil, nil
+		}
+		start = codexCalendarDay(started)
+	}
+	if info, err := os.Stat(sessionPath); err == nil && info.ModTime().After(lastWrite) {
+		lastWrite = info.ModTime()
+	}
 	end := start
-	if info, err := os.Stat(sessionPath); err == nil {
-		mtime := info.ModTime()
-		if last := time.Date(mtime.Year(), mtime.Month(), mtime.Day(), 0, 0, 0, 0, time.UTC); last.After(end) {
+	if !lastWrite.IsZero() {
+		if last := codexCalendarDay(lastWrite); last.After(end) {
 			end = last
 		}
 	}
-	sessionsRoot := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(sessionPath))))
 	var paths []string
 	for day := start.AddDate(0, 0, -1); !day.After(end.AddDate(0, 0, 1)); day = day.AddDate(0, 0, 1) {
 		dir := filepath.Join(sessionsRoot, day.Format("2006"), day.Format("01"), day.Format("02"))
-		found, err := d.descendantPaths(AgentCodex, dir, parentID, func() (parentLinkInventory, error) {
+		found, err := d.descendantPaths(agent, dir, parentID, func() (parentLinkInventory, error) {
 			return discoverCodexDaySubagents(ctx, dir)
 		})
 		if err != nil {
@@ -674,7 +721,7 @@ func discoverCodexDaySubagents(ctx context.Context, dir string) (parentLinkInven
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		id, parent := readCodexSessionMetaParent(ctx, path)
+		id, parent := readCodexChildLink(ctx, path)
 		if id == "" || parent == "" || parent == id {
 			continue
 		}
@@ -684,9 +731,13 @@ func discoverCodexDaySubagents(ctx context.Context, dir string) (parentLinkInven
 	return inventory, nil
 }
 
-// readCodexSessionMetaParent decodes only a rollout's first line, its
-// session_meta, and returns the thread ID and parent thread ID.
-func readCodexSessionMetaParent(ctx context.Context, path string) (id, parentID string) {
+// readCodexChildLink decodes only a rollout's first line, its session_meta,
+// and returns the rollout's session key and the key it descends from. A
+// subagent rollout links its thread to the spawning thread. A thread/revert
+// page shares its thread ID with the original rollout, so it keeps its own
+// <thread>_<rollout> key and links to the rollout it continues, as parsing
+// does.
+func readCodexChildLink(ctx context.Context, path string) (id, parentID string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", ""
@@ -699,7 +750,17 @@ func readCodexSessionMetaParent(ctx context.Context, path string) (id, parentID 
 		return "", ""
 	}
 	payload := gjson.GetBytes(line, "payload")
-	return strings.TrimSpace(payload.Get("id").Str), codexSubagentParentThreadID(payload)
+	threadID := strings.TrimSpace(payload.Get("id").Str)
+	base := strings.TrimSpace(payload.Get("history_base.thread_id").Str)
+	forkedFrom := strings.TrimSpace(payload.Get("forked_from_id").Str)
+	if pageID, pageParent, ok := codexRevertPage(
+		path,
+		codexRevertPageThreadID(CodexSessionUUIDFromFilename(filepath.Base(path)), payload.Get("id").Str, payload.Get("session_id").Str),
+		base, forkedFrom, codexForkBaseInherited(payload, base, forkedFrom),
+	); ok {
+		return pageID, strings.TrimPrefix(pageParent, codexIDPrefix)
+	}
+	return threadID, codexSubagentParentThreadID(payload)
 }
 
 // discoverEvenerSubagents reads each session's metadata and transcript header.

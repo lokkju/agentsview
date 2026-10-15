@@ -21051,18 +21051,22 @@ func (e *Engine) SyncSingleSession(sessionID string) (err error) {
 func (e *Engine) SyncSingleSessionContext(
 	ctx context.Context, sessionID string,
 ) error {
-	return e.syncSingleSessionContext(ctx, sessionID, true)
+	return e.syncSingleSessionContext(ctx, sessionID, true, e.FindSourceFile)
 }
 
 // SyncSingleSessionForUsageContext bounds lock waiting for a usage refresh.
+// sourcePath is the caller's FindSourceFile result, so a remote source root
+// is not listed a second time; empty means the source was not found.
 func (e *Engine) SyncSingleSessionForUsageContext(
-	ctx context.Context, sessionID string,
+	ctx context.Context, sessionID, sourcePath string,
 ) error {
-	return e.syncSingleSessionContext(ctx, sessionID, false)
+	return e.syncSingleSessionContext(ctx, sessionID, false,
+		func(context.Context, string) string { return sourcePath })
 }
 
 func (e *Engine) syncSingleSessionContext(
 	ctx context.Context, sessionID string, wait bool,
+	findSource func(context.Context, string) string,
 ) (err error) {
 	if e.sourceSyncErr != nil {
 		return e.sourceSyncErr
@@ -21114,7 +21118,7 @@ func (e *Engine) syncSingleSessionContext(
 		}
 	}
 
-	path := e.FindSourceFile(ctx, sessionID)
+	path := findSource(ctx, sessionID)
 	if host, _ := parser.StripHostPrefix(sessionID); host != "" && !isS3SourcePath(path) {
 		return fmt.Errorf(
 			"cannot sync remote session %s locally", sessionID,

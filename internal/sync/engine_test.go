@@ -10136,7 +10136,9 @@ func TestTargetedRefreshLockWait(t *testing.T) {
 		run      func(context.Context, *Engine) error
 		outcomes []string
 	}{
-		{"usage", func(ctx context.Context, e *Engine) error { return e.SyncSingleSessionForUsageContext(ctx, "parent") }, []string{"release", "busy", "cancel"}},
+		{"usage", func(ctx context.Context, e *Engine) error {
+			return e.SyncSingleSessionForUsageContext(ctx, "parent", e.FindSourceFile(ctx, "parent"))
+		}, []string{"release", "busy", "cancel"}},
 		{"s3", func(ctx context.Context, e *Engine) error {
 			return e.SyncS3SubagentTranscriptsContext(ctx, "parent", parser.AgentClaude, nil)
 		}, []string{"busy"}},
@@ -10234,9 +10236,9 @@ func TestSubagentRefreshDiscovery(t *testing.T) {
 			oldPaths := subagentTranscriptPaths
 			t.Cleanup(func() { subagentTranscriptPaths = oldPaths })
 			enumerations := 0
-			subagentTranscriptPaths = func(discovery *parser.SubagentTranscriptDiscovery, ctx context.Context, agent parser.AgentType, path, rawSessionID string) ([]string, error) {
+			subagentTranscriptPaths = func(discovery *parser.SubagentTranscriptDiscovery, ctx context.Context, agent parser.AgentType, path, rawSessionID string, started, lastWrite time.Time) ([]string, error) {
 				enumerations++
-				return oldPaths(discovery, ctx, agent, path, rawSessionID)
+				return oldPaths(discovery, ctx, agent, path, rawSessionID, started, lastWrite)
 			}
 			require.False(t, engine.StartupReconciled())
 			require.NoError(t, engine.SyncSessionWithSubagentsContext(t.Context(), parentID))

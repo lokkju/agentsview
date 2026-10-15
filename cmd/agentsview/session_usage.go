@@ -211,7 +211,7 @@ func httpSessionUsageData(
 				refreshed = true
 				fmt.Fprintf(os.Stderr, "warning: sync failed: %v; showing stored usage, which may be incomplete\n", syncErr)
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: could not import session from its source: %v\n", syncErr)
+				fmt.Fprintf(os.Stderr, "warning: could not import session: %v\n", syncErr)
 			}
 		} else if detail != nil {
 			resolvedID, err, refreshed = detail.ID, nil, true
