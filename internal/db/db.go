@@ -582,7 +582,10 @@ CREATE INDEX IF NOT EXISTS idx_provider_freshness_updated_at
 // linked to its thread, instead of codex:<rollout>. This changes session ids,
 // so it is a full rebuild; the resync's curation copy moves the old row's
 // state to the new id.)
-const dataVersion = 134
+// (135: a Codex cloud session with no token records and no plan usage
+// records gets an empty plan usage row, so usage reports count it as
+// billed as plan usage. Re-parse unchanged Codex cloud sources in place.)
+const dataVersion = 135
 
 const archiveOnlyVersionBase = 1 << 20
 
