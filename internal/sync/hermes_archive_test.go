@@ -387,7 +387,7 @@ func TestSyncPathsHermesArchiveTranscriptKeepsSeparateSource(t *testing.T) {
 		AgentDirs: map[parser.AgentType][]string{parser.AgentHermes: {root}}, Machine: "local",
 	})
 	t.Cleanup(engine.Close)
-	require.NoError(t, engine.syncPathsContext(t.Context(), []string{transcriptPath}, false))
+	require.NoError(t, engine.syncPathsContext(t.Context(), []string{transcriptPath}, false, true))
 	stored, err := database.GetSession(t.Context(), "hermes:extra")
 	require.NoError(t, err)
 	require.NotNil(t, stored)
@@ -1307,7 +1307,7 @@ func TestHermesIncrementalSyncBoundsSiblingWrites(t *testing.T) {
 							transcript := filepath.Join(root, "sessions", "child.jsonl")
 							require.NoError(t, os.MkdirAll(filepath.Dir(transcript), 0o755))
 							require.NoError(t, os.WriteFile(transcript, []byte(`{"role":"user","content":"changed child prompt from transcript","timestamp":"2026-05-14T10:01:00Z"}`+"\n"), 0o600))
-							require.NoError(t, engine.syncPathsContext(ctx, []string{transcript}, false))
+							require.NoError(t, engine.syncPathsContext(ctx, []string{transcript}, false, true))
 						} else {
 							_, err = conn.ExecContext(t.Context(), "UPDATE messages SET content = 'changed child prompt from transcript' WHERE session_id = 'child'")
 							require.NoError(t, err)
@@ -1320,7 +1320,7 @@ func TestHermesIncrementalSyncBoundsSiblingWrites(t *testing.T) {
 								if mode == "WAL event" {
 									eventPath += "-wal"
 								}
-								require.NoError(t, engine.syncPathsContext(ctx, []string{eventPath}, false))
+								require.NoError(t, engine.syncPathsContext(ctx, []string{eventPath}, false, true))
 							}
 						}
 						for i, id := range siblingIDs {
@@ -1577,7 +1577,7 @@ func TestHermesSingleSessionRefreshDoesNotUnmigrateLegacySibling(t *testing.T) {
 			// transcript event, leaving "child" on the legacy bare path.
 			writeHermesTranscriptFile(t, filepath.Join(root, "sessions"), "sibling")
 			require.NoError(t, engine.syncPathsContext(
-				t.Context(), []string{filepath.Join(root, "sessions", "sibling.jsonl")}, false,
+				t.Context(), []string{filepath.Join(root, "sessions", "sibling.jsonl")}, false, true,
 			))
 			require.Equal(t, parser.VirtualSourcePath(stateDB, "sibling"),
 				database.GetSessionFilePath(t.Context(), siblingID),
@@ -1641,7 +1641,7 @@ func TestHermesSingleSessionRefreshOfDeletedLegacySessionIsNoOp(t *testing.T) {
 			// Migrate the sibling to its own per-session path.
 			writeHermesTranscriptFile(t, filepath.Join(root, "sessions"), "sibling")
 			require.NoError(t, engine.syncPathsContext(
-				t.Context(), []string{filepath.Join(root, "sessions", "sibling.jsonl")}, false,
+				t.Context(), []string{filepath.Join(root, "sessions", "sibling.jsonl")}, false, true,
 			))
 			siblingBefore, err := database.GetSessionFull(t.Context(), siblingID)
 			require.NoError(t, err)
@@ -1711,9 +1711,9 @@ func TestHermesPartialDiscoverySyncsReadableTranscripts(t *testing.T) {
 			case "full sync":
 				reported = engine.SyncAll(t.Context(), nil).Failed > 0
 			case "state event":
-				reported = engine.syncPathsContext(t.Context(), []string{stateDB, healthy}, false) != nil
+				reported = engine.syncPathsContext(t.Context(), []string{stateDB, healthy}, false, true) != nil
 			case "transcript event":
-				reported = engine.syncPathsContext(t.Context(), []string{filepath.Join(dir, "fallback.jsonl"), healthy}, false) != nil
+				reported = engine.syncPathsContext(t.Context(), []string{filepath.Join(dir, "fallback.jsonl"), healthy}, false, true) != nil
 			}
 
 			assert.True(t, reported, "incomplete discovery must be reported")
@@ -1792,7 +1792,7 @@ func TestHermesDottedCronIDsSyncAndResolve(t *testing.T) {
 			t.Cleanup(engine.Close)
 			switch test.mode {
 			case "state event", "WAL event":
-				require.NoError(t, engine.syncPathsContext(t.Context(), []string{event}, false))
+				require.NoError(t, engine.syncPathsContext(t.Context(), []string{event}, false, true))
 			default:
 				require.Zero(t, engine.SyncAll(t.Context(), nil).Failed)
 			}
@@ -1884,7 +1884,7 @@ func TestHermesTranscriptBesideStateDBReplacesMessages(t *testing.T) {
 			path := test.change(t, root)
 			var incomplete bool
 			if test.event {
-				incomplete = engine.syncPathsContext(t.Context(), []string{path}, false) != nil
+				incomplete = engine.syncPathsContext(t.Context(), []string{path}, false, true) != nil
 			} else {
 				incomplete = engine.SyncAll(t.Context(), nil).Failed > 0
 			}
@@ -2071,7 +2071,7 @@ func TestHermesStateEventSurfacesTranscriptAfterRowRemoved(t *testing.T) {
 
 	execHermesState(t, stateDB, "DELETE FROM sessions WHERE id = 'child'")
 
-	require.NoError(t, engine.syncPathsContext(t.Context(), []string{stateDB}, false))
+	require.NoError(t, engine.syncPathsContext(t.Context(), []string{stateDB}, false, true))
 
 	assert.Equal(t, filepath.Join(root, "sessions", "child.jsonl"),
 		database.GetSessionFilePath(t.Context(), "hermes:child"),
