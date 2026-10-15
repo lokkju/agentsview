@@ -176,13 +176,22 @@ func TestReleaseFetcherConcurrentFetchesShareCache(t *testing.T) {
 	var wg sync.WaitGroup
 	paths := make([]string, fetchers)
 	errs := make([]error, fetchers)
+	finished := make(chan struct{}, fetchers)
 	for i := range fetchers {
 		wg.Go(func() {
 			paths[i], errs[i] = f.Fetch(t.Context(), "0.45.0", platform{"linux", "amd64"})
+			finished <- struct{}{}
 		})
 	}
-	for range fetchers {
-		<-arrived
+	// Hold every download at the server so the fetches overlap. A fetch that
+	// fails before downloading never arrives, so stop waiting when one
+	// finishes early and let the assertions below report its error.
+	for waiting := fetchers; waiting > 0; waiting-- {
+		select {
+		case <-arrived:
+		case <-finished:
+			waiting = 0
+		}
 	}
 	close(release)
 	wg.Wait()

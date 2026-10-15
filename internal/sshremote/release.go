@@ -81,7 +81,11 @@ func (f releaseFetcher) Fetch(ctx context.Context, version string, p platform) (
 		}
 		if err := atomicfile.Replace(tmp, sumsPath); err != nil {
 			_ = os.Remove(tmp)
-			return "", fmt.Errorf("store SHA256SUMS: %w", err)
+			// Windows refuses to replace a file another fetch has open. That
+			// fetch stored the same release's SHA256SUMS, so use its copy.
+			if _, statErr := os.Stat(sumsPath); statErr != nil {
+				return "", fmt.Errorf("store SHA256SUMS: %w", err)
+			}
 		}
 	}
 	want, err := checksumFor(sumsPath, name)
@@ -108,7 +112,11 @@ func (f releaseFetcher) Fetch(ctx context.Context, version string, p platform) (
 	}
 	if err := atomicfile.Replace(tmp, tarball); err != nil {
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("store release tarball: %w", err)
+		// As for SHA256SUMS: a concurrent fetch may hold the stored tarball
+		// open. Its bytes are the verified release, so use it.
+		if stored, hashErr := fileSHA256(tarball); hashErr != nil || stored != want {
+			return "", fmt.Errorf("store release tarball: %w", err)
+		}
 	}
 	return tarball, nil
 }
