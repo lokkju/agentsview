@@ -287,6 +287,33 @@ func scanDeepSeekHarnessLog(
 	return scan, nil
 }
 
+// readDeepSeekHarnessHeader decodes only a log's header line. The writer
+// puts the header in its own first zstd frame, so this skips the event data.
+func readDeepSeekHarnessHeader(ctx context.Context, path string) (deepSeekHarnessHeader, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return deepSeekHarnessHeader{}, err
+	}
+	defer f.Close()
+	var source io.Reader = f
+	if strings.HasSuffix(path, ".zstd") {
+		decoder, err := newDeepSeekHarnessZstdDecoder(f)
+		if err != nil {
+			return deepSeekHarnessHeader{}, fmt.Errorf("open zstd stream: %w", err)
+		}
+		defer decoder.Close()
+		source = decoder
+	}
+	line, complete, err := newDeepSeekHarnessLineReader(ctxio.Reader{Context: ctx, Reader: source}).next()
+	if err != nil {
+		return deepSeekHarnessHeader{}, classifyDeepSeekHarnessPhysicalError(path, err)
+	}
+	if !complete || len(line) == 0 {
+		return deepSeekHarnessHeader{}, errors.New("empty or header-less DeepSeek Harness session log")
+	}
+	return parseDeepSeekHarnessHeader(line)
+}
+
 func newDeepSeekHarnessZstdDecoder(r io.Reader) (*zstd.Decoder, error) {
 	return zstd.NewReader(
 		r,
