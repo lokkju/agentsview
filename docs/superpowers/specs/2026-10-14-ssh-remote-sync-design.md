@@ -256,7 +256,9 @@ The chosen path is remembered for the rest of that sync run only.
    `https://github.com/kenn-io/agentsview/releases/download/v<ver>/`. Verify
    the SHA-256 against `SHA256SUMS`. Cache the verified tarball under
    `<data_dir>/ssh-binaries/<ver>/`. A checksum mismatch deletes the download
-   and fails the host sync.
+   and fails the host sync. Fetches that share a cache directory in one
+   process run one at a time, so one download serves concurrent hosts and no
+   fetch opens a file while another replaces it, which Windows refuses.
 1. Stream the tarball over one SSH call to a fixed install script. The script
    extracts it into a fresh `.tmp-*` directory under
    `$HOME/.cache/agentsview/bin/`, checks that `agentsview` exists and that
@@ -288,14 +290,16 @@ Retention is therefore based on idle time, not on the newest version:
 - Retention is best effort. The new binary is already in place, so a removal
   that fails, for example on a directory another install removed first, does
   not fail the install.
-- The probe's check-and-refresh and retention's age-check-and-remove both run
-  under a cache lock, the `.lock` directory, which `mkdir` creates atomically
-  on every platform. So retention cannot remove an identity between another
-  collector's probe and its refresh, and a refreshed identity is safe for 30
-  days. A probe whose refresh fails treats the identity as a miss. A lock
-  older than two minutes belongs to a holder that died and is taken over.
-  Waiting for a held lock is bounded: the probe then goes on without it, and
-  the install skips retention until a later install.
+- A probe refreshes `.last-used` as part of selecting a cached identity, and a
+  refresh that fails makes the identity a miss. A refreshed identity is safe
+  from retention for 30 days.
+- Retention can still remove an identity between its idle check and another
+  collector's refresh. That collector's first serve step then fails with shell
+  status 127 because the binary is gone, and the SSH source provisions again
+  once and retries the step. Retention removes a binary within moments of its
+  idle check, so the first step after the probe catches it, before any archive
+  transfer. No remote lock is used: a POSIX shell has no atomic way to reclaim
+  a lock left by a holder that died without risking removal of a newer lock.
 
 A collector that syncs less than once every 30 days uploads again on its next
 sync.

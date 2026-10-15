@@ -269,6 +269,27 @@ func TestSSHSourceUploadsItselfWhenRemoteHasNoAgentsview(t *testing.T) {
 		filepath.Join(env.ssh.Home, ".cache", "agentsview", "bin", id, "agentsview"))
 }
 
+func TestSSHSourceProvisionsAgainWhenItsBinaryVanishes(t *testing.T) {
+	env := newSourceEnv(t)
+	installTestBinary(t, env.ssh.Home, env.build)
+	id, err := env.build.ContentID()
+	require.NoError(t, err)
+	source := env.source()
+	bin, err := source.ensure(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, cachedBinary(id), bin)
+	// Another collector's retention removes the binary right after this
+	// probe selected it.
+	cached := filepath.Join(env.ssh.Home, ".cache", "agentsview", "bin", id)
+	require.NoError(t, os.RemoveAll(cached))
+
+	stats, err := env.run(t, source)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.SessionsSynced)
+	assert.FileExists(t, filepath.Join(cached, "agentsview"), "uploaded again")
+}
+
 func TestSSHSourceFullSyncLeavesRemoteHomeUnchanged(t *testing.T) {
 	env := newSourceEnv(t)
 	installTestBinary(t, env.ssh.Home, env.build)

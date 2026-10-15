@@ -36,17 +36,48 @@ var errShellOutput error = shellOutputError{}
 // Source fetches remote sync data by running agentsview over SSH.
 type Source struct {
 	provisioner Provisioner
-	once        sync.Once
-	binary      remoteBinary
-	ensureErr   error
+
+	mu            sync.Mutex
+	ensured       bool
+	reprovisioned bool
+	binary        remoteBinary
+	ensureErr     error
 }
 
 // NewSource returns a Source for one sync run.
 func NewSource(p Provisioner) *Source { return &Source{provisioner: p} }
 
 func (s *Source) ensure(ctx context.Context) (remoteBinary, error) {
-	s.once.Do(func() { s.binary, s.ensureErr = s.provisioner.Ensure(ctx) })
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ensured {
+		s.binary, s.ensureErr = s.provisioner.Ensure(ctx)
+		s.ensured = true
+	}
 	return s.binary, s.ensureErr
+}
+
+// forgetBinary makes the next step provision again, once per sync. Another
+// collector's retention can remove a cached binary just after this one's
+// probe selected it.
+func (s *Source) forgetBinary() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reprovisioned {
+		return false
+	}
+	s.reprovisioned = true
+	s.ensured = false
+	return true
+}
+
+// shellCommandNotFound is the shell's exit status when exec cannot find the
+// program, here the selected remote binary.
+const shellCommandNotFound = 127
+
+func binaryMissing(err error) bool {
+	cmdErr, ok := errors.AsType[*CommandError](err)
+	return ok && cmdErr.Remote == nil && cmdErr.ExitCode == shellCommandNotFound
 }
 
 func serveScript(bin remoteBinary, op Op) (string, error) {
@@ -78,7 +109,18 @@ func (s *Source) start(ctx context.Context, op Op, req serveRequest) (io.ReadClo
 	return newZstdChecked(stream), nil
 }
 
+// call runs one operation and decodes its JSON response. Retention removes a
+// binary within moments of its idle check, so a binary that vanished after
+// the probe shows up here, at the first step, before any archive transfer.
 func (s *Source) call(ctx context.Context, op Op, req serveRequest, out any) error {
+	err := s.callOnce(ctx, op, req, out)
+	if binaryMissing(err) && s.forgetBinary() {
+		err = s.callOnce(ctx, op, req, out)
+	}
+	return err
+}
+
+func (s *Source) callOnce(ctx context.Context, op Op, req serveRequest, out any) error {
 	stream, err := s.start(ctx, op, req)
 	if err != nil {
 		return err

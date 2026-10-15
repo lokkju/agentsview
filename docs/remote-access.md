@@ -207,10 +207,9 @@ The `<id>` is `v<version>` for a release build. A development build uses
 share a binary. Each sync updates `.last-used` for the binary it runs. An
 install removes other binaries that have been idle for more than 30 days and
 leftover `.tmp-*` upload directories older than one day. If one cannot be
-removed, the install still succeeds. While a sync picks its binary or an install
-cleans up, a short-lived `~/.cache/agentsview/bin/.lock` directory keeps
-collectors that share the account from removing a binary another one just
-picked.
+removed, the install still succeeds. If another collector's cleanup removes a
+binary just after a sync picked it, that sync installs it again and carries
+on.
 
 Each sync runs a short `agentsview remote-sync serve` process per step: target
 resolution, manifest, and archive. Each process reads its own configuration

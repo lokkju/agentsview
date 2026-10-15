@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,7 +73,6 @@ func remoteToolDir(t *testing.T) string {
 	dir := t.TempDir()
 	for _, tool := range []string{
 		"sh", "uname", "tar", "gzip", "mktemp", "chmod", "mkdir", "mv", "touch", "find", "rm",
-		"rmdir", "sleep",
 	} {
 		path, err := exec.LookPath(tool)
 		require.NoError(t, err)
@@ -530,46 +528,6 @@ func TestProvisionRetention(t *testing.T) {
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"dev-0123456789abcdef", "old-b", ".tmp-fresh"},
 		env.binEntries(t))
-}
-
-func TestProvisionRetentionRespectsTheCacheLock(t *testing.T) {
-	remoteLockWaitSeconds = 1
-	t.Cleanup(func() { remoteLockWaitSeconds = 30 })
-	tests := []struct {
-		name          string
-		lockAge       time.Duration
-		wantRetention bool
-	}{
-		// Another collector is probing or cleaning up: leave its lock and
-		// the idle identity alone, and still finish the install.
-		{name: "held lock skips retention", lockAge: 0, wantRetention: false},
-		// A lock older than two minutes belongs to a holder that died.
-		{name: "stale lock is taken over", lockAge: 10 * time.Minute, wantRetention: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			env := newProvisionEnv(t)
-			bin := env.binDir()
-			require.NoError(t, os.MkdirAll(filepath.Join(bin, "old-a"), 0o755))
-			setAge(t, filepath.Join(bin, "old-a", ".last-used"), 40*24*time.Hour)
-			lock := filepath.Join(bin, ".lock")
-			require.NoError(t, os.Mkdir(lock, 0o755))
-			lockTime := time.Now().Add(-tt.lockAge)
-			require.NoError(t, os.Chtimes(lock, lockTime, lockTime))
-			p := env.provisioner(LocalBuild{Version: "dev"}, "", t.TempDir())
-
-			_, err := p.installTarball(t.Context(), "dev-0123456789abcdef",
-				writeTarball(t, tarEntry{"agentsview", fakeAgentsviewScript}))
-
-			require.NoError(t, err)
-			entries := env.binEntries(t)
-			assert.Contains(t, entries, "dev-0123456789abcdef")
-			assert.Equal(t, !tt.wantRetention, slices.Contains(entries, "old-a"),
-				"idle identity kept only when the lock is held")
-			assert.Equal(t, !tt.wantRetention, slices.Contains(entries, ".lock"),
-				"a held lock is left to its owner; a taken-over one is released")
-		})
-	}
 }
 
 func TestProvisionSkipsACachedBinaryItCannotRefresh(t *testing.T) {

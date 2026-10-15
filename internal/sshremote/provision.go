@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"go.kenn.io/agentsview/internal/remotesync"
@@ -55,27 +54,6 @@ func requireIdentity(id string) error {
 const pathProbeVersions = `v0.2[3-9]*|0.2[3-9]*|v0.[3-9][0-9]*|0.[3-9][0-9]*|` +
 	`v0.[1-9][0-9][0-9]*|0.[1-9][0-9][0-9]*|v[1-9]*.*|[1-9]*.*`
 
-// remoteLockWaitSeconds bounds how long a probe or an install's retention
-// waits for the remote cache lock before going on without it. Tests shorten
-// it.
-var remoteLockWaitSeconds = 30
-
-// lockCacheScript takes the remote cache lock, a directory that mkdir
-// creates atomically on every platform, and sets $got when it holds it. A
-// lock older than two minutes was left by a holder that died and is taken
-// over. Nothing is created when the cache does not exist yet.
-func lockCacheScript() string {
-	return `got=""; if [ -d "$bin" ]; then i=0; ` +
-		`while [ "$i" -lt ` + strconv.Itoa(remoteLockWaitSeconds) + ` ]; do ` +
-		`find "$bin/.lock" -prune -mmin +2 -exec rmdir {} + 2>/dev/null || true; ` +
-		`if mkdir "$bin/.lock" 2>/dev/null; then got=1; break; fi; ` +
-		`i=$((i+1)); sleep 1; done; fi`
-}
-
-// unlockCacheScript releases the lock only if this script took it.
-const unlockCacheScript = `if [ -n "$got" ]; then ` +
-	`rmdir "$bin/.lock" 2>/dev/null || true; got=""; fi`
-
 // probeScript reports the platform, probes each cached identity (touching
 // .last-used for every one that answers), then probes agentsview on PATH
 // when its version is new enough to answer safely. Each report line ends
@@ -90,16 +68,13 @@ func probeScript(ids []string) (string, error) {
 		`bin="` + remoteBinDir + `"`,
 		`echo "os=$(uname -s)"`,
 		`echo "arch=$(uname -m)"`,
-		lockCacheScript(),
-		// Retention takes the same lock, so it cannot remove an identity
-		// between this check and the refresh. A refreshed identity is safe
-		// from retention for 30 days; one that cannot be refreshed is a miss.
+		// A refreshed identity is safe from retention for 30 days; one that
+		// cannot be refreshed may be removed, so it is a miss.
 		`for id in ` + strings.Join(ids, " ") + `; do ` +
 			`if [ -x "$bin/$id/agentsview" ] && ` +
 			`out=$("$bin/$id/agentsview" remote-sync probe 2>/dev/null) && ` +
 			`touch "$bin/$id/.last-used" 2>/dev/null; then ` +
 			`printf "cached %s %s" "$id" "$out"; echo; fi; done`,
-		unlockCacheScript,
 		`if command -v agentsview >/dev/null 2>&1; then ` +
 			`v=$(agentsview version </dev/null 2>/dev/null) || v=""; ` +
 			`case "${v#agentsview }" in ` + pathProbeVersions + `) ` +
@@ -122,10 +97,9 @@ func installScript(id string) (string, error) {
 		`set -eu`,
 		`bin="` + remoteBinDir + `"`,
 		`id="` + id + `"`,
-		`got=""`,
 		`mkdir -p "$bin"`,
 		`tmp=$(mktemp -d "$bin/.tmp-XXXXXX")`,
-		`cleanup() { rm -rf "$tmp"; ` + unlockCacheScript + `; }`,
+		`cleanup() { rm -rf "$tmp"; }`,
 		`trap cleanup EXIT`,
 		`tar -xzf - -C "$tmp"`,
 		`[ -f "$tmp/agentsview" ] || ` +
@@ -135,16 +109,11 @@ func installScript(id string) (string, error) {
 		`mkdir -p "$bin/$id"`,
 		`mv -f "$tmp/agentsview" "$bin/$id/agentsview"`,
 		`touch "$bin/$id/.last-used"`,
-		lockCacheScript(),
-		// Retention runs only under the cache lock; without it, it waits for
-		// a later install.
-		`if [ -n "$got" ]; then ` +
-			`find "$bin" -mindepth 1 -maxdepth 1 -type d -name ".tmp-*" -mtime +0 ` +
-			`-exec rm -rf {} + || true; ` +
-			`for d in "$bin"/*; do [ -d "$d" ] || continue; [ "$d" = "$bin/$id" ] && continue; ` +
+		`find "$bin" -mindepth 1 -maxdepth 1 -type d -name ".tmp-*" -mtime +0 ` +
+			`-exec rm -rf {} + || true`,
+		`for d in "$bin"/*; do [ -d "$d" ] || continue; [ "$d" = "$bin/$id" ] && continue; ` +
 			`m="$d"; [ -f "$d/.last-used" ] && m="$d/.last-used"; ` +
-			`if [ -n "$(find "$m" -prune -mtime +30)" ]; then rm -rf "$d"; fi; done || true; fi`,
-		unlockCacheScript,
+			`if [ -n "$(find "$m" -prune -mtime +30)" ]; then rm -rf "$d"; fi; done || true`,
 	}, "; ")
 	return script, validateScript(script)
 }
