@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 // SubagentTranscriptRoot returns the source scope holding a session's children.
@@ -20,7 +23,17 @@ func SubagentTranscriptRoot(agent AgentType, sessionPath string) string {
 		return ""
 	}
 	switch agent {
-	case AgentCodex, AgentTraeX, AgentAugureCode:
+	case AgentCodex:
+		if _, ok := codexDatedDay(sessionPath); ok {
+			return sessionPath
+		}
+		return ""
+	case AgentTraeX, AgentAugureCode:
+		return ""
+	case AgentGrok:
+		if filepath.Base(sessionPath) == "summary.json" {
+			return filepath.Join(filepath.Dir(sessionPath), "subagents")
+		}
 		return ""
 	case AgentShelley:
 		if _, _, ok := parseShelleyVirtualPath(sessionPath); ok {
@@ -155,6 +168,10 @@ func (d *SubagentTranscriptDiscovery) Paths(ctx context.Context, agent AgentType
 		return nil, nil
 	}
 	switch agent {
+	case AgentCodex:
+		return d.codexChildPaths(ctx, sessionPath, rawSessionID)
+	case AgentGrok:
+		return grokSubagentChildPaths(root)
 	case AgentWorkBuddy:
 		return workBuddySubagentTranscriptPaths(ctx, root)
 	case AgentShelley:
@@ -257,7 +274,16 @@ func (d *SubagentTranscriptDiscovery) Paths(ctx context.Context, agent AgentType
 			return discoverEvenerSubagents(ctx, shared)
 		})
 	case AgentRooCode:
-		return rooCodeChildPaths(sessionPath)
+		paths, found, err := rooCodeChildPaths(sessionPath)
+		if found || err != nil {
+			return paths, err
+		}
+		// A retained task whose folder is gone is still named by its
+		// children's parentTaskId.
+		tasksDir := filepath.Dir(filepath.Dir(sessionPath))
+		return d.descendantPaths(agent, tasksDir, rawSessionID, func() (parentLinkInventory, error) {
+			return discoverRooCodeSubagents(ctx, filepath.Dir(tasksDir))
+		})
 	case AgentOmnigent:
 		return omnigentDescendantPaths(ctx, sessionPath)
 	case AgentPi, AgentOMP, AgentOMO, AgentStepCode:
@@ -495,21 +521,21 @@ func evenerSharedRoot(sessionPath string) (string, bool) {
 }
 
 // rooCodeChildPaths reads the parent's childIds. The parent records every
-// child it spawned there, including children no newTask call names.
-func rooCodeChildPaths(historyPath string) ([]string, error) {
+// child it spawned there, including children no newTask call names. found is
+// false when the parent's history item is missing.
+func rooCodeChildPaths(historyPath string) (paths []string, found bool, err error) {
 	data, err := os.ReadFile(historyPath)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	var item rooCodeHistoryItem
 	if err := json.Unmarshal(data, &item); err != nil {
-		return nil, fmt.Errorf("decode Roo Code history item %s: %w", historyPath, err)
+		return nil, true, fmt.Errorf("decode Roo Code history item %s: %w", historyPath, err)
 	}
 	tasksDir := filepath.Dir(filepath.Dir(historyPath))
-	var paths []string
 	for _, id := range item.ChildIDs {
 		if !isSafeSinglePathComponent(id) {
 			continue
@@ -519,7 +545,161 @@ func rooCodeChildPaths(historyPath string) ([]string, error) {
 		}
 	}
 	slices.Sort(paths)
+	return paths, true, nil
+}
+
+// discoverRooCodeSubagents reads each task's parentTaskId.
+func discoverRooCodeSubagents(ctx context.Context, root string) (parentLinkInventory, error) {
+	inventory := parentLinkInventory{
+		children: make(map[string][]string),
+		paths:    make(map[string]string),
+	}
+	err := rooCodeDiscoverEach(ctx, root, func(match singleFileMatch) error {
+		data, err := os.ReadFile(match.Path)
+		if err != nil {
+			return err
+		}
+		var item rooCodeHistoryItem
+		if err := json.Unmarshal(data, &item); err != nil || item.ParentTaskID == "" {
+			return nil //nolint:nilerr // Undecodable tasks are reported when the task itself syncs.
+		}
+		id := filepath.Base(filepath.Dir(match.Path))
+		if item.ParentTaskID == id {
+			return nil
+		}
+		inventory.paths[id] = match.Path
+		inventory.children[item.ParentTaskID] = append(inventory.children[item.ParentTaskID], id)
+		return nil
+	})
+	return inventory, err
+}
+
+// grokSubagentChildPaths reads <parent>/subagents/<child>/meta.json, where
+// the parent records every child, including resumed and worktree children
+// whose spawn returned no result. A worktree child lives under another cwd
+// group, so each child is looked up across the whole sessions root.
+func grokSubagentChildPaths(subagentsDir string) ([]string, error) {
+	entries, err := os.ReadDir(subagentsDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sessionDir := filepath.Dir(subagentsDir)
+	sessionsRoot := filepath.Dir(filepath.Dir(sessionDir))
+	var paths []string
+	for _, entry := range entries {
+		if !entry.IsDir() || !IsValidSessionID(entry.Name()) {
+			continue
+		}
+		parentID, childID, ok := readGrokSubagentMeta(filepath.Join(subagentsDir, entry.Name(), "meta.json"))
+		if !ok || parentID != filepath.Base(sessionDir) {
+			continue
+		}
+		if childID == "" {
+			childID = entry.Name()
+		}
+		if match, ok := grokFindFile(sessionsRoot, childID); ok {
+			paths = append(paths, match.Path)
+		}
+	}
+	slices.Sort(paths)
 	return paths, nil
+}
+
+// codexDatedDay returns the day folder date of a local
+// <root>/YYYY/MM/DD/rollout-*.jsonl path.
+func codexDatedDay(sessionPath string) (time.Time, bool) {
+	if strings.Contains(sessionPath, "://") || !isCodexSessionFilename(filepath.Base(sessionPath)) {
+		return time.Time{}, false
+	}
+	dayDir := filepath.Dir(sessionPath)
+	monthDir := filepath.Dir(dayDir)
+	yearDir := filepath.Dir(monthDir)
+	day, err := time.Parse("2006/01/02", filepath.Base(yearDir)+"/"+filepath.Base(monthDir)+"/"+filepath.Base(dayDir))
+	return day, err == nil
+}
+
+// codexChildPaths finds rollouts whose session_meta names parentID.
+// Guardian-review and similar children record their parent only there, so
+// the parent never names them. A child starts after its parent, so the search
+// covers the day folders from the parent's start through its last write,
+// widened by a day on each side because folder dates use local time. The
+// undated archived_sessions folder is not searched.
+func (d *SubagentTranscriptDiscovery) codexChildPaths(ctx context.Context, sessionPath, parentID string) ([]string, error) {
+	start, _ := codexDatedDay(sessionPath)
+	end := start
+	if info, err := os.Stat(sessionPath); err == nil {
+		mtime := info.ModTime()
+		if last := time.Date(mtime.Year(), mtime.Month(), mtime.Day(), 0, 0, 0, 0, time.UTC); last.After(end) {
+			end = last
+		}
+	}
+	sessionsRoot := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(sessionPath))))
+	var paths []string
+	for day := start.AddDate(0, 0, -1); !day.After(end.AddDate(0, 0, 1)); day = day.AddDate(0, 0, 1) {
+		dir := filepath.Join(sessionsRoot, day.Format("2006"), day.Format("01"), day.Format("02"))
+		found, err := d.descendantPaths(AgentCodex, dir, parentID, func() (parentLinkInventory, error) {
+			return discoverCodexDaySubagents(ctx, dir)
+		})
+		if err != nil {
+			return paths, err
+		}
+		paths = append(paths, found...)
+	}
+	slices.Sort(paths)
+	return paths, nil
+}
+
+// discoverCodexDaySubagents reads the session_meta line of each rollout in
+// one day folder.
+func discoverCodexDaySubagents(ctx context.Context, dir string) (parentLinkInventory, error) {
+	inventory := parentLinkInventory{
+		children: make(map[string][]string),
+		paths:    make(map[string]string),
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return inventory, nil
+	}
+	if err != nil {
+		return inventory, err
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return inventory, err
+		}
+		if entry.IsDir() || !isCodexSessionFilename(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		id, parent := readCodexSessionMetaParent(ctx, path)
+		if id == "" || parent == "" || parent == id {
+			continue
+		}
+		inventory.paths[id] = path
+		inventory.children[parent] = append(inventory.children[parent], id)
+	}
+	return inventory, nil
+}
+
+// readCodexSessionMetaParent decodes only a rollout's first line, its
+// session_meta, and returns the thread ID and parent thread ID.
+func readCodexSessionMetaParent(ctx context.Context, path string) (id, parentID string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", ""
+	}
+	defer f.Close()
+	lr := newLineReaderContext(ctx, f, maxLineSize)
+	defer releaseLineReader(lr)
+	line, err := lr.readLineBytes()
+	if err != nil || gjson.GetBytes(line, "type").Str != codexTypeSessionMeta {
+		return "", ""
+	}
+	payload := gjson.GetBytes(line, "payload")
+	return strings.TrimSpace(payload.Get("id").Str), codexSubagentParentThreadID(payload)
 }
 
 // discoverEvenerSubagents reads each session's metadata and transcript header.

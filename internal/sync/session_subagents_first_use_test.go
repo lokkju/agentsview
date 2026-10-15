@@ -39,6 +39,7 @@ func TestSyncSessionWithSubagentsDiscoversChildLinkedSessionsBeforeStartupSync(t
 		{name: "crush", agent: parser.AgentCrush, prefix: "crush:", newSource: newCrushFirstUseSource},
 		{name: "evener", agent: parser.AgentEvener, prefix: "evener:", newSource: newEvenerFirstUseSource},
 		{name: "roo code", agent: parser.AgentRooCode, prefix: "roocode:", newSource: newRooCodeFirstUseSource},
+		{name: "grok", agent: parser.AgentGrok, prefix: "grok:", newSource: newGrokFirstUseSource},
 	} {
 		for _, childSourceRemoved := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/child_source_removed=%t", tc.name, childSourceRemoved), func(t *testing.T) {
@@ -247,8 +248,9 @@ func newEvenerFirstUseSource(t *testing.T) firstUseSource {
 	}
 }
 
-// newRooCodeFirstUseSource lists each child in its parent's childIds. With no
-// ui_messages.json there is no newTask call to name a child.
+// newRooCodeFirstUseSource lists each child in its parent's childIds, and each
+// child names its parent in parentTaskId. With no ui_messages.json there is no
+// newTask call to name a child.
 func newRooCodeFirstUseSource(t *testing.T) firstUseSource {
 	t.Helper()
 	root := t.TempDir()
@@ -276,6 +278,50 @@ func newRooCodeFirstUseSource(t *testing.T) firstUseSource {
 				write(parent)
 			}
 			write(id)
+		},
+		remove: func(id string) {
+			t.Helper()
+			require.NoError(t, os.RemoveAll(filepath.Join(root, "tasks", id)))
+		},
+	}
+}
+
+// newGrokFirstUseSource records each child in its parent's
+// subagents/<child>/meta.json. No parent chat history names a child, as for a
+// resumed or worktree spawn, and each child lives in its own worktree cwd
+// group.
+func newGrokFirstUseSource(t *testing.T) firstUseSource {
+	t.Helper()
+	root := t.TempDir()
+	dirs := make(map[string]string)
+	writeJSON := func(path string, value any) {
+		t.Helper()
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		data, err := json.Marshal(value)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, data, 0o600))
+	}
+	return firstUseSource{
+		root: root,
+		add: func(id, parent string) {
+			t.Helper()
+			cwd := "/work/project"
+			summary := map[string]any{
+				"session_summary": id + " task", "created_at": "2026-07-18T10:00:00Z", "updated_at": "2026-07-18T10:05:00Z",
+				"num_messages": 1, "num_chat_messages": 1, "current_model_id": "grok-4.5", "agent_name": "grok-build",
+			}
+			if parent != "" {
+				cwd = "/work/worktree-" + id
+				summary["session_kind"] = "subagent"
+				writeJSON(filepath.Join(dirs[parent], "subagents", id, "meta.json"), map[string]any{
+					"subagent_id": id, "parent_session_id": parent, "child_session_id": id, "status": "completed",
+				})
+			}
+			summary["info"] = map[string]any{"id": id, "cwd": cwd}
+			dir := filepath.Join(root, strings.ReplaceAll(cwd, "/", "%2F"), id)
+			dirs[id] = dir
+			writeJSON(filepath.Join(dir, "summary.json"), summary)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "chat_history.jsonl"), []byte(`{"type":"user","content":"`+id+` prompt"}`+"\n"), 0o600))
 		},
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"go.kenn.io/agentsview/internal/dbtest"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/testjsonl"
 )
 
 // firstUseRecords writes sessions for one agent. id maps a test name to the
@@ -36,6 +37,7 @@ func TestSyncSessionWithSubagentsDiscoversChildLinkedRecordsBeforeStartupSync(t 
 		{name: "deepseek harness", agent: parser.AgentDeepSeekHarness, prefix: "deepseek-harness:", newRecords: newDeepSeekHarnessFirstUseRecords},
 		{name: "omnigent", agent: parser.AgentOmnigent, prefix: "omnigent:0:", newRecords: newOmnigentFirstUseRecords},
 		{name: "antigravity cli", agent: parser.AgentAntigravityCLI, prefix: "antigravity-cli:", newRecords: newAntigravityCLIFirstUseRecords},
+		{name: "codex", agent: parser.AgentCodex, prefix: "codex:", newRecords: newCodexFirstUseRecords},
 	} {
 		for _, childSourceRemoved := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/child_source_removed=%t", tc.name, childSourceRemoved), func(t *testing.T) {
@@ -206,6 +208,49 @@ func newAntigravityCLIFirstUseRecords(t *testing.T) firstUseRecords {
 			t.Helper()
 			require.NoError(t, os.Remove(filepath.Join(convDir, ids[name]+".pb")))
 			require.NoError(t, os.Remove(filepath.Join(convDir, ids[name]+".trajectory.json")))
+		},
+	}
+}
+
+// newCodexFirstUseRecords writes dated rollouts. Each child is a guardian
+// review that names its parent only in its own session_meta, and no parent
+// records a spawn. The grandchild starts a day after the others.
+func newCodexFirstUseRecords(t *testing.T) firstUseRecords {
+	t.Helper()
+	root := t.TempDir()
+	ids := map[string]string{
+		"parent":     "019a0000-0000-7000-8000-000000000001",
+		"child":      "019a0000-0000-7000-8000-000000000002",
+		"grandchild": "019a0000-0000-7000-8000-000000000003",
+		"unrelated":  "019a0000-0000-7000-8000-000000000004",
+	}
+	paths := make(map[string]string)
+	return firstUseRecords{
+		root: root,
+		id:   func(name string) string { return ids[name] },
+		add: func(name, parent string) {
+			t.Helper()
+			id, day := ids[name], "10"
+			if name == "grandchild" {
+				day = "11"
+			}
+			ts := "2026-09-" + day + "T10:00:00Z"
+			meta := testjsonl.CodexSessionMetaJSON(id, "/work/project", "codex_cli_rs", ts)
+			if parent != "" {
+				meta = testjsonl.CodexSubagentSessionMetaVariantJSON(
+					"guardian_review", map[string]any{"other": "guardian"},
+					id, ids[parent], "/work/project", "codex_cli_rs", ts,
+				)
+			}
+			dir := filepath.Join(root, "2026", "09", day)
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+			paths[name] = filepath.Join(dir, "rollout-2026-09-"+day+"T10-00-00-"+id+".jsonl")
+			content := testjsonl.JoinJSONL(meta, testjsonl.CodexMsgJSON("user", name+" prompt", ts))
+			require.NoError(t, os.WriteFile(paths[name], []byte(content), 0o600))
+		},
+		remove: func(name string) {
+			t.Helper()
+			require.NoError(t, os.Remove(paths[name]))
 		},
 	}
 }
