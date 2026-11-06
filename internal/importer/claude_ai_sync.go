@@ -51,9 +51,14 @@ func claudeAICountsMarker(store db.Store) string {
 	return ""
 }
 
+// claudeAIParserMarker names the parser output a cached fingerprint was taken
+// from. Changing it makes the next Sync fetch every cached chat once, so chats
+// archived before tool calls were read gain them in place.
+const claudeAIParserMarker = "tool-calls\x00"
+
 func claudeAIFreshness(store db.Store, updatedAt, leaf string, session *db.Session) uint64 {
 	hash := fnv.New64a()
-	fmt.Fprintf(hash, "%s%s\x00%s\x00%d", claudeAICountsMarker(store), updatedAt, leaf, session.MessageCount)
+	fmt.Fprintf(hash, "%s%s%s\x00%s\x00%d", claudeAIParserMarker, claudeAICountsMarker(store), updatedAt, leaf, session.MessageCount)
 	for _, field := range []*string{session.TranscriptRevision, session.SessionName, session.EndedAt} {
 		fmt.Fprint(hash, "\x00")
 		if field != nil {
