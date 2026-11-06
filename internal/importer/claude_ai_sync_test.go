@@ -611,7 +611,10 @@ func preBranchCountFreshness(session *db.Session) uint64 {
 	return hash.Sum64()
 }
 
-func TestSyncClaudeAIFullArchiveKeepsPreBranchCountFreshness(t *testing.T) {
+// A full archive's fingerprint from before tool calls were read has the same
+// format as preBranchCountFreshness, since full archives never carried the
+// counts marker. Sync fetches such a chat once more, then caches it again.
+func TestSyncClaudeAIFullArchiveRefetchesPreToolCallFreshnessOnce(t *testing.T) {
 	const id = "claude-ai:22222222-2222-4222-8222-222222222222"
 	d := testDB(t)
 	detailCalls := 0
@@ -628,7 +631,11 @@ func TestSyncClaudeAIFullArchiveKeepsPreBranchCountFreshness(t *testing.T) {
 	stats, err := SyncClaudeAI(t.Context(), d, fetch, nil)
 	require.NoError(t, err)
 	assert.Equal(t, ImportStats{Skipped: 1}, stats)
-	assert.Equal(t, 1, detailCalls)
+	assert.Equal(t, 2, detailCalls)
+	stats, err = SyncClaudeAI(t.Context(), d, fetch, nil)
+	require.NoError(t, err)
+	assert.Equal(t, ImportStats{Skipped: 1}, stats)
+	assert.Equal(t, 2, detailCalls)
 }
 
 func TestSyncClaudeAIUsageArchiveShorterBranchUpdatesCounts(t *testing.T) {

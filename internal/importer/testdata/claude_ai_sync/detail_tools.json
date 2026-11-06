@@ -1,0 +1,122 @@
+{
+  "uuid": "22222222-2222-4222-8222-222222222222",
+  "name": "Chat",
+  "current_leaf_message_uuid": "answer",
+  "created_at": "2026-03-01T10:00:00Z",
+  "updated_at": "2026-03-01T10:05:00.123456Z",
+  "is_archived": false,
+  "chat_messages": [
+    {
+      "uuid": "ask",
+      "index": 0,
+      "parent_message_uuid": "00000000-0000-4000-8000-000000000000",
+      "sender": "human",
+      "text": "",
+      "content": [{"type": "text", "text": "Write a short poem about tides and check the moon phase"}],
+      "created_at": "2026-03-01T10:00:00Z",
+      "updated_at": "2026-03-01T10:00:00Z",
+      "attachments": [
+        {"file_name": "notes.txt", "file_type": "text/plain", "file_size": 17, "extracted_content": "Spring tide notes"}
+      ],
+      "files": [
+        {"file_kind": "image", "file_uuid": "33333333-3333-4333-8333-333333333331", "file_name": "shore.png", "created_at": "2026-03-01T10:00:00Z", "thumbnail_url": "/api/organizations/11111111-1111-4111-8111-111111111111/files/33333333-3333-4333-8333-333333333331/thumbnail", "preview_url": "/api/organizations/11111111-1111-4111-8111-111111111111/files/33333333-3333-4333-8333-333333333331/preview"}
+      ],
+      "files_v2": [
+        {"file_kind": "image", "file_uuid": "33333333-3333-4333-8333-333333333331", "file_name": "shore.png", "created_at": "2026-03-01T10:00:00Z", "thumbnail_url": "/api/organizations/11111111-1111-4111-8111-111111111111/files/33333333-3333-4333-8333-333333333331/thumbnail", "preview_url": "/api/organizations/11111111-1111-4111-8111-111111111111/files/33333333-3333-4333-8333-333333333331/preview", "thumbnail_asset": {"url": "/api/organizations/11111111-1111-4111-8111-111111111111/files/33333333-3333-4333-8333-333333333331/thumbnail", "file_variant": "thumbnail", "image_width": 400, "image_height": 300}, "preview_asset": {"url": "/api/organizations/11111111-1111-4111-8111-111111111111/files/33333333-3333-4333-8333-333333333331/preview", "file_variant": "preview", "image_width": 1200, "image_height": 900}},
+        {"file_kind": "document", "file_uuid": "33333333-3333-4333-8333-333333333332", "file_name": "tides.pdf", "created_at": "2026-03-01T10:00:00Z", "document_asset": {"url": "/api/organizations/11111111-1111-4111-8111-111111111111/files/33333333-3333-4333-8333-333333333332/document_pdf", "page_count": 2}}
+      ],
+      "sync_sources": [],
+      "truncated": false
+    },
+    {
+      "uuid": "draft",
+      "index": 1,
+      "parent_message_uuid": "ask",
+      "sender": "assistant",
+      "text": "",
+      "content": [
+        {"type": "text", "text": "Let me check the sky first."},
+        {"type": "tool_use", "id": "toolu_search", "name": "web_search", "input": {"query": "moon phase today"}, "message": "Searching the web", "icon_name": "globe"},
+        {"type": "tool_result", "tool_use_id": "toolu_search", "name": "web_search", "content": [{"type": "knowledge", "title": "Lunar calendar", "url": "https://example.com/moon", "text": "The moon is waxing gibbous.", "metadata": {"type": "webpage_metadata", "site_domain": "example.com"}}], "is_error": false},
+        {"type": "text", "text": "The moon is waxing gibbous."},
+        {"type": "tool_use", "id": "toolu_poem", "name": "artifacts", "input": {"id": "tide-poem", "command": "create", "type": "text/markdown", "title": "Tide Poem", "content": "Silver water climbs the sand"}, "message": "Creating the poem", "icon_name": "file"},
+        {"type": "tool_result", "tool_use_id": "toolu_poem", "name": "artifacts", "content": [{"type": "text", "text": "OK"}], "is_error": false}
+      ],
+      "created_at": "2026-03-01T10:01:00Z",
+      "updated_at": "2026-03-01T10:01:00Z",
+      "attachments": [],
+      "files": [],
+      "files_v2": [],
+      "sync_sources": [],
+      "truncated": false
+    },
+    {
+      "uuid": "count",
+      "index": 2,
+      "parent_message_uuid": "draft",
+      "sender": "human",
+      "text": "",
+      "content": [{"type": "text", "text": "Count the words"}],
+      "created_at": "2026-03-01T10:02:00Z",
+      "updated_at": "2026-03-01T10:02:00Z",
+      "attachments": [],
+      "files": [],
+      "files_v2": [],
+      "sync_sources": [],
+      "truncated": false
+    },
+    {
+      "uuid": "answer",
+      "index": 3,
+      "parent_message_uuid": "count",
+      "sender": "assistant",
+      "text": "",
+      "content": [
+        {"type": "tool_use", "id": "toolu_count", "name": "repl", "input": {"code": "console.log('Silver water climbs the sand'.split(' ').length)"}, "message": "Analyzing", "icon_name": "chart"},
+        {"type": "tool_result", "tool_use_id": "toolu_count", "name": "repl", "content": [{"type": "text", "text": "{\"status\":\"success\",\"logs\":[\"5\"]}"}], "is_error": false},
+        {"type": "text", "text": "The poem has five words."}
+      ],
+      "created_at": "2026-03-01T10:03:00Z",
+      "updated_at": "2026-03-01T10:03:00Z",
+      "attachments": [],
+      "files": [],
+      "files_v2": [],
+      "sync_sources": [],
+      "truncated": false
+    },
+    {
+      "uuid": "rhyme",
+      "index": 4,
+      "parent_message_uuid": "draft",
+      "sender": "human",
+      "text": "",
+      "content": [{"type": "text", "text": "Make it rhyme"}],
+      "created_at": "2026-03-01T10:04:00Z",
+      "updated_at": "2026-03-01T10:04:00Z",
+      "attachments": [],
+      "files": [],
+      "files_v2": [],
+      "sync_sources": [],
+      "truncated": false
+    },
+    {
+      "uuid": "rhymed",
+      "index": 5,
+      "parent_message_uuid": "rhyme",
+      "sender": "assistant",
+      "text": "",
+      "content": [
+        {"type": "tool_use", "id": "toolu_rhyme", "name": "artifacts", "input": {"id": "tide-poem", "command": "update", "old_str": "climbs the sand", "new_str": "meets the land"}, "message": "Editing the poem", "icon_name": "file"},
+        {"type": "tool_result", "tool_use_id": "toolu_rhyme", "name": "artifacts", "content": [{"type": "text", "text": "Edit failed"}], "is_error": true},
+        {"type": "text", "text": "Here is a rhyming version."}
+      ],
+      "created_at": "2026-03-01T10:05:00Z",
+      "updated_at": "2026-03-01T10:05:00Z",
+      "attachments": [],
+      "files": [],
+      "files_v2": [],
+      "sync_sources": [],
+      "truncated": false
+    }
+  ]
+}

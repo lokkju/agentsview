@@ -28,6 +28,10 @@ type claudeAIMessage struct {
 	Sender      string               `json:"sender"`
 	CreatedAt   string               `json:"created_at"`
 	Attachments []claudeAIAttachment `json:"attachments"`
+	// Files and FilesV2 stay raw so an entry of an unexpected shape is
+	// skipped instead of failing the whole conversation.
+	Files   []jsontext.Value `json:"files"`
+	FilesV2 []jsontext.Value `json:"files_v2"`
 }
 
 // claudeAIBlock represents a content block within a message.
@@ -37,6 +41,28 @@ type claudeAIBlock struct {
 	Type     string `json:"type"`
 	Text     string `json:"text"`
 	Thinking string `json:"thinking"`
+	// tool holds the raw tool_use or tool_result block. Tool fields are
+	// decoded leniently from it, so a tool block of an unexpected shape
+	// loses its call instead of failing the conversation.
+	tool jsontext.Value
+}
+
+// UnmarshalJSON decodes the display fields strictly, as before tool blocks
+// were read, and keeps tool blocks raw for lenient decoding.
+func (b *claudeAIBlock) UnmarshalJSON(data []byte) error {
+	var base struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Thinking string `json:"thinking"`
+	}
+	if err := json.Unmarshal(data, &base); err != nil {
+		return err
+	}
+	*b = claudeAIBlock{Type: base.Type, Text: base.Text, Thinking: base.Thinking}
+	if base.Type == "tool_use" || base.Type == "tool_result" {
+		b.tool = jsontext.Value(slices.Clone(data))
+	}
+	return nil
 }
 
 // ClaudeAIExportParser is implemented by the Claude.ai import-only provider to
@@ -87,7 +113,8 @@ func (p *claudeAIImportOnlyProvider) ParseClaudeAIExport(
 			continue
 		}
 
-		result, err := convertClaudeAIConversation(conv)
+		// Exports carry no file bytes, so they have no images to link.
+		result, err := convertClaudeAIConversation(conv, nil)
 		if err != nil {
 			return fmt.Errorf(
 				"converting conversation %s: %w",
@@ -103,8 +130,33 @@ func (p *claudeAIImportOnlyProvider) ParseClaudeAIExport(
 	return err
 }
 
+// ClaudeAIFile is an uploaded file a Claude.ai message references in files
+// or files_v2. The API carries the file's metadata and URLs, not its bytes.
+type ClaudeAIFile struct {
+	UUID       string `json:"file_uuid"`
+	Name       string `json:"file_name"`
+	Kind       string `json:"file_kind"`
+	PreviewURL string `json:"preview_url"`
+}
+
+// ClaudeAIImageResolver returns the asset:// reference of an image whose
+// bytes the caller stored, or false when they are unavailable.
+type ClaudeAIImageResolver func(ClaudeAIFile) (assetRef string, ok bool)
+
 // ParseClaudeAIDetail selects the visible branch of a browser-fetched chat.
+// Image uploads are left out of message text; see
+// ParseClaudeAIDetailWithImages.
 func ParseClaudeAIDetail(data []byte) (ParseResult, error) {
+	return ParseClaudeAIDetailWithImages(data, nil)
+}
+
+// ParseClaudeAIDetailWithImages is ParseClaudeAIDetail with image uploads:
+// each image file the resolver returns a reference for is appended to its
+// message as a Markdown image link. A nil resolver, or one that returns
+// false, leaves the message text unchanged.
+func ParseClaudeAIDetailWithImages(
+	data []byte, images ClaudeAIImageResolver,
+) (ParseResult, error) {
 	var conv *claudeAIConversation
 	if err := json.Unmarshal(data, &conv); err != nil {
 		return ParseResult{}, err
@@ -117,7 +169,7 @@ func ParseClaudeAIDetail(data []byte) (ParseResult, error) {
 		return ParseResult{}, err
 	}
 	conv.Messages = messages
-	return convertClaudeAIConversation(*conv)
+	return convertClaudeAIConversation(*conv, images)
 }
 
 // assembleClaudeAIContent builds message content from content
@@ -154,8 +206,10 @@ func assembleClaudeAIContent(
 				contentParts = append(contentParts,
 					"[Thinking]\n"+b.Thinking+"\n[/Thinking]")
 			}
-			// tool_use, tool_result, voice_note, token_budget
-			// are metadata blocks — skip for display content.
+			// tool_use and tool_result become tool calls
+			// (attachClaudeAITools) and stay out of the text so
+			// archived rows keep their identity. voice_note and
+			// token_budget are metadata blocks.
 		}
 	}
 
@@ -227,7 +281,7 @@ func selectedClaudeAIPath(conv claudeAIConversation) ([]claudeAIMessage, error) 
 }
 
 func convertClaudeAIConversation(
-	conv claudeAIConversation,
+	conv claudeAIConversation, images ClaudeAIImageResolver,
 ) (ParseResult, error) {
 	startedAt, err := time.Parse(time.RFC3339Nano, conv.CreatedAt)
 	if err != nil {
@@ -245,10 +299,12 @@ func convertClaudeAIConversation(
 		msgs             []ParsedMessage
 		userCount        int
 		firstUserMessage string
+		calls            = map[string]claudeAICallRef{}
 	)
 
 	for i, m := range conv.Messages {
 		content, hasThinking := assembleClaudeAIContent(m)
+		content = appendClaudeAIImages(content, m, images)
 
 		role := RoleAssistant
 		if m.Sender == "human" {
@@ -269,6 +325,7 @@ func convertClaudeAIConversation(
 			HasThinking:   hasThinking,
 			ContentLength: len(content),
 		})
+		attachClaudeAITools(msgs, calls, m.Content)
 	}
 
 	return ParseResult{
@@ -286,4 +343,160 @@ func convertClaudeAIConversation(
 		},
 		Messages: msgs,
 	}, nil
+}
+
+// appendClaudeAIImages appends a Markdown image link for each image upload
+// of m that images resolves. Links go after the existing text, so a message
+// archived without them keeps its text as a prefix.
+func appendClaudeAIImages(
+	content string, m claudeAIMessage, images ClaudeAIImageResolver,
+) string {
+	if images == nil {
+		return content
+	}
+	parts := []string{}
+	if content != "" {
+		parts = append(parts, content)
+	}
+	for _, file := range claudeAIImageFiles(m) {
+		if ref, ok := images(file); ok && ref != "" {
+			parts = append(parts, "![image]("+ref+")")
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// claudeAIImageFiles lists m's image uploads once each, files_v2 first.
+// Entries that do not decode, are not images, or have no file UUID are
+// skipped; documents keep today's attachment text instead.
+func claudeAIImageFiles(m claudeAIMessage) []ClaudeAIFile {
+	var files []ClaudeAIFile
+	seen := map[string]bool{}
+	for _, raw := range slices.Concat(m.FilesV2, m.Files) {
+		var file ClaudeAIFile
+		if json.Unmarshal(raw, &file) != nil ||
+			file.Kind != "image" || file.UUID == "" || seen[file.UUID] {
+			continue
+		}
+		seen[file.UUID] = true
+		files = append(files, file)
+	}
+	return files
+}
+
+// claudeAICallRef locates an emitted tool call by message and call index.
+type claudeAICallRef struct{ message, call int }
+
+type claudeAIToolUse struct {
+	ID    string         `json:"id"`
+	Name  string         `json:"name"`
+	Input jsontext.Value `json:"input"`
+}
+
+type claudeAIToolResult struct {
+	ToolUseID string         `json:"tool_use_id"`
+	Name      string         `json:"name"`
+	Content   jsontext.Value `json:"content"`
+	IsError   bool           `json:"is_error"`
+}
+
+// attachClaudeAITools turns the tool_use and tool_result blocks of the last
+// message in msgs into tool calls on that message. The message's text and
+// ordinal stay as they are, so archived rows keep their identity. A result
+// pairs with its call by tool_use_id, searching earlier messages of the same
+// branch; a named result without a known call becomes a call of its own.
+func attachClaudeAITools(
+	msgs []ParsedMessage, calls map[string]claudeAICallRef, blocks []claudeAIBlock,
+) {
+	idx := len(msgs) - 1
+	msg := &msgs[idx]
+	for _, b := range blocks {
+		switch b.Type {
+		case "tool_use":
+			var use claudeAIToolUse
+			if json.Unmarshal(b.tool, &use) != nil || use.Name == "" {
+				continue
+			}
+			// Compact the input so an export and a browser fetch of the
+			// same chat store identical calls.
+			input := ""
+			if len(use.Input) > 0 && use.Input.Kind() != jsontext.KindNull &&
+				use.Input.Compact() == nil {
+				input = string(use.Input)
+			}
+			msg.ToolCalls = append(msg.ToolCalls, ParsedToolCall{
+				ToolUseID: use.ID,
+				ToolName:  use.Name,
+				Category:  NormalizeToolCategory(use.Name),
+				InputJSON: input,
+			})
+			msg.HasToolUse = true
+			if use.ID != "" {
+				calls[use.ID] = claudeAICallRef{idx, len(msg.ToolCalls) - 1}
+			}
+		case "tool_result":
+			var result claudeAIToolResult
+			if json.Unmarshal(b.tool, &result) != nil {
+				continue
+			}
+			event := ParsedToolResultEvent{
+				ToolUseID: result.ToolUseID,
+				Content:   claudeAIToolResultText(result.Content),
+			}
+			if result.IsError {
+				event.Status = "error"
+			}
+			if ref, ok := calls[result.ToolUseID]; ok && result.ToolUseID != "" {
+				call := &msgs[ref.message].ToolCalls[ref.call]
+				call.ResultEvents = append(call.ResultEvents, event)
+				continue
+			}
+			if result.Name == "" {
+				continue
+			}
+			msg.ToolCalls = append(msg.ToolCalls, ParsedToolCall{
+				ToolUseID:    result.ToolUseID,
+				ToolName:     result.Name,
+				Category:     NormalizeToolCategory(result.Name),
+				ResultEvents: []ParsedToolResultEvent{event},
+			})
+			msg.HasToolUse = true
+		}
+	}
+}
+
+// claudeAIToolResultText flattens a tool_result's content into readable,
+// searchable text. Text blocks keep their text; web search results
+// (knowledge blocks) keep their title, URL and excerpt. String content is
+// used as is.
+func claudeAIToolResultText(raw jsontext.Value) string {
+	var text string
+	if raw.Kind() == jsontext.KindString && json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	var blocks []jsontext.Value
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, rawBlock := range blocks {
+		var block struct {
+			Title string `json:"title"`
+			URL   string `json:"url"`
+			Text  string `json:"text"`
+		}
+		if json.Unmarshal(rawBlock, &block) != nil {
+			continue
+		}
+		var fields []string
+		for _, field := range []string{block.Title, block.URL, block.Text} {
+			if strings.TrimSpace(field) != "" {
+				fields = append(fields, field)
+			}
+		}
+		if len(fields) > 0 {
+			parts = append(parts, strings.Join(fields, "\n"))
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }

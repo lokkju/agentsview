@@ -664,6 +664,9 @@ func ptrEqual(a, b *string) bool {
 // projection the message write applies, without writing anything.
 func storedFormMessages(store db.Store, msgs []db.Message) []db.Message {
 	out := slices.Clone(msgs)
+	for i := range out {
+		out[i].ToolCalls = slices.Clone(out[i].ToolCalls)
+	}
 	db.ValidateAndSanitize(nil, out, nil)
 	_, out = db.ProjectSessionForStoragePolicy(
 		db.Session{}, out, storeArchiveContent(store),
@@ -683,11 +686,23 @@ func sameMessages(existing, incoming []db.Message) bool {
 	for i := range existing {
 		if !sameTurn(existing[i], incoming[i]) ||
 			existing[i].Content != incoming[i].Content ||
-			existing[i].ContentLength != incoming[i].ContentLength {
+			existing[i].ContentLength != incoming[i].ContentLength ||
+			existing[i].HasToolUse != incoming[i].HasToolUse ||
+			!sameToolCalls(existing[i].ToolCalls, incoming[i].ToolCalls) {
 			return false
 		}
 	}
 	return true
+}
+
+// sameToolCalls compares the tool-call fields an import writes, so a chat
+// archived before its tool calls were read is refreshed rather than skipped.
+func sameToolCalls(existing, incoming []db.ToolCall) bool {
+	return slices.EqualFunc(existing, incoming, func(a, b db.ToolCall) bool {
+		return a.ToolName == b.ToolName && a.Category == b.Category &&
+			a.ToolUseID == b.ToolUseID && a.InputJSON == b.InputJSON &&
+			a.ResultContent == b.ResultContent
+	})
 }
 
 // compareChatGPTPrefix reports whether the export still starts with the

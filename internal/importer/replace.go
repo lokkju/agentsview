@@ -123,6 +123,8 @@ func claudeAIMessages(
 			Content:       m.Content,
 			Timestamp:     m.Timestamp.UTC().Format(time.RFC3339Nano),
 			ContentLength: m.ContentLength,
+			HasToolUse:    m.HasToolUse,
+			ToolCalls:     convertToolCalls(sessionID, m.ToolCalls),
 		}
 	}
 	return msgs

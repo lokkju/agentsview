@@ -166,7 +166,10 @@ during Sync.
 Changed chats show Claude.ai's visible branch, even when it has fewer turns.
 Usage-only archives also update their message and user-turn counts to follow
 that branch. The first Sync after upgrading refetches cached usage-only chat
-details once to repair their counts. If a replacement loses a pin or note, Sync
+details once to repair their counts. The first Sync after upgrading to a build
+that reads Claude.ai tool calls also fetches every cached chat once, so chats
+archived earlier gain their artifacts and tool output. If a replacement loses a
+pin or note, Sync
 keeps the previous version in Trash with its pins and notes. Replacements that
 preserve every pin and note make no copy. Switching back on Claude.ai restores
 those turns, but dropped pins and notes stay in the Trash copy. Trashed and
@@ -217,6 +220,18 @@ each Gemini Apps `Prompted` record becomes one user message containing its
 complete visible plain text. HTML presentation does not infer speaker roles;
 inline code and preformatted text remain text without generated Markdown.
 
+### Artifacts and tools (Claude.ai)
+
+Claude.ai artifacts, web searches, and analysis-tool runs appear as tool calls
+on the reply that made them. An artifact call holds its title, type, and full
+text; a web search holds the query and each result's title, URL, and excerpt;
+an analysis run holds its code and output. Search covers all of them. The
+reply's own text and position in the chat are unchanged.
+
+Only the branch Claude.ai shows is imported. Uploaded images are not stored
+yet, because neither the export nor Sync downloads their bytes. Other uploads
+keep their file name and extracted text.
+
 ### Images (ChatGPT)
 
 ChatGPT exports include images — both DALL-E generations
@@ -258,7 +273,8 @@ You can safely re-import the same export file:
   export) is reported as an error and leaves the stored session unchanged
   unless you explicitly replace it with `--replace`.
   Equal-length or longer exports can refresh earlier messages, including
-  attachment text; earlier turns do not have to match the archive.
+  attachment text and tool calls; earlier turns do not have to match the
+  archive. Adding tool calls to an archived chat keeps its pins and notes.
 - **ChatGPT** — unchanged sessions are skipped. An export may add messages when
   every archived message still matches the beginning of the export. The match
   compares message text and each archived tool call's name and category, and
