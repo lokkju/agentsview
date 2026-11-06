@@ -1,0 +1,60 @@
+# Hosted raw sync with raw derivation under Kata. Used by `helm lint` and
+# `helm template`.
+mode: hosted
+
+image:
+  repository: registry.example.com/agentsview
+  tag: 0.46.1-1a2b3c4
+
+runtimeClassName: kata-clh-runtime-rs
+
+postgres:
+  host: agentsview-db-rw
+  database: app
+  credentials:
+    # Restricted runtime role, created as a CNPG managed role.
+    existingSecret: agentsview-db-hosted-runtime
+
+hosted:
+  schema: hosted_sessions
+  tenant: tenant-example
+  rawDerivation: true
+  provision:
+    enabled: true
+    credentials:
+      # The CNPG application owner.
+      existingSecret: agentsview-db-app
+
+auth:
+  existingSecret: agentsview-auth
+
+cursorSecret:
+  existingSecret: agentsview-cursor
+
+server:
+  publicURL: https://agents.example.com
+  writeTimeout: 60s
+
+persistence:
+  enabled: true
+  size: 50Gi
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    memory: 4Gi
+
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    - host: agents.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: agents-example-com-tls
+      hosts:
+        - agents.example.com
