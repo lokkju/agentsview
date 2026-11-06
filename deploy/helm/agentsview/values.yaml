@@ -1,0 +1,257 @@
+# Default values for the agentsview chart. See README.md for the two
+# supported modes and a worked example of each.
+
+# mode selects what the server does. Both modes run `agentsview replica pg serve`.
+#   pg-serve: serve a PostgreSQL schema that workstations fill with
+#             `agentsview replica pg push`. The server parses nothing, so it
+#             needs no parser sandbox and no special runtime class.
+#   hosted:   hosted raw sync. Devices upload original session files with
+#             `agentsview source raw watch`. With hosted.rawDerivation the
+#             server parses them in a sandbox that needs a VM runtime class
+#             such as Kata (see runtimeClassName).
+mode: pg-serve
+
+image:
+  # Required. The chart has no default image. The upstream image
+  # (ghcr.io/kenn-io/agentsview) is published as :latest and lags releases, so
+  # build the repository's Dockerfile from a known commit and push it to a
+  # registry your cluster can pull from. If you do use an upstream image, pin
+  # an exact release tag or digest, never :latest.
+  repository: ""
+  # Required unless digest is set.
+  tag: ""
+  # Optional. When set, the image is pulled by digest and tag is ignored.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# PostgreSQL connection. The chart never takes a password as a value. The
+# server reads PGUSER and PGPASSWORD from an existing Secret, and the URL in
+# config.toml carries no credentials. The defaults match a CloudNativePG
+# Cluster named agentsview-db in the release namespace: CNPG creates the
+# agentsview-db-rw Service and the agentsview-db-app Secret.
+postgres:
+  host: agentsview-db-rw
+  port: 5432
+  database: app
+  # require, verify-ca or verify-full. AgentsView refuses disable, allow and
+  # prefer unless allowInsecure is true.
+  sslMode: require
+  # CA bundle for verify-ca or verify-full. For CNPG, the <cluster>-ca Secret
+  # holds it under ca.crt.
+  caSecret:
+    name: ""
+    key: ca.crt
+  # Accept a database connection without TLS. Use only on a private network.
+  allowInsecure: false
+  # Schema served in pg-serve mode. Hosted mode uses hosted.schema.
+  schema: agentsview
+  # Login used by the running server. In hosted mode this must be the
+  # restricted runtime role, not the schema owner (see README.md).
+  credentials:
+    existingSecret: agentsview-db-app
+    usernameKey: username
+    passwordKey: password
+
+# Hosted raw sync settings. Used only when mode is hosted.
+hosted:
+  schema: hosted_sessions
+  # Required in hosted mode. One tenant per server instance.
+  tenant: ""
+  # Parse uploaded sessions into PostgreSQL so they are browsable. This runs
+  # the parser sandbox and needs runtimeClassName (see below).
+  rawDerivation: true
+  pollSeconds: 5
+  attemptSeconds: 60
+  maxAttempts: 5
+  # Fail rendering when rawDerivation is on and runtimeClassName does not
+  # contain "kata". The sandbox fails closed under runc on nodes that restrict
+  # unprivileged user namespaces (Ubuntu 24.04 and later), and gVisor does not
+  # enforce one of its resource limits. Set false only for a runtime class you
+  # have verified with the sandbox tests.
+  requireKataRuntime: true
+  # Optional Helm hook Job that runs
+  # `agentsview replica pg hosted-provision provision` with the schema-owner
+  # login before each install and upgrade. It installs or upgrades hosted
+  # tables. It does not create the runtime role or grant it access; run the
+  # grants in docs/hosted-raw-sync.md yourself.
+  provision:
+    enabled: false
+    credentials:
+      existingSecret: agentsview-db-app
+      usernameKey: username
+      passwordKey: password
+    backoffLimit: 1
+    activeDeadlineSeconds: 600
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+# Shared bearer token for the web UI, API and `agentsview mcp --server`
+# clients. The token is read from a mounted file
+# (AGENTSVIEW_AUTH_TOKEN_FILE), never from the environment.
+auth:
+  # Hosted raw derivation refuses to start without authentication.
+  required: true
+  # Required when required is true. Create it yourself, for example:
+  #   kubectl create secret generic agentsview-auth --from-literal=token="$(openssl rand -base64 32)"
+  existingSecret: ""
+  tokenKey: token
+
+# Stable HMAC key for pagination cursors. Required in hosted mode. Without it
+# the server generates a new key on every start, which expires open cursors.
+#   kubectl create secret generic agentsview-cursor --from-literal=cursor-secret="$(openssl rand -base64 32)"
+cursorSecret:
+  existingSecret: ""
+  key: cursor-secret
+
+server:
+  port: 8080
+  # URL prefix when a proxy mounts AgentsView below a path, such as /agentsview.
+  basePath: ""
+  # Browser URL, origin only, such as https://agents.example.com. Also a
+  # trusted origin for Host/Origin checks. Set it whenever a proxy or ingress
+  # sits in front of the server.
+  publicURL: ""
+  # Additional trusted origins.
+  publicOrigins: []
+  # API response deadline, such as 60s. Empty keeps the server default (30s).
+  writeTimeout: ""
+  # The server writes its log to debug.log in the data directory. When true,
+  # the chart points that file at the container's stderr so `kubectl logs`
+  # shows it.
+  logToStderr: true
+  # Extra flags appended to `agentsview replica pg serve`.
+  extraArgs: []
+
+# Extra config.toml content. extraSettings holds top-level keys and is placed
+# before any table; extraTables holds whole TOML tables and is placed last.
+config:
+  disableUpdateCheck: true
+  extraSettings: ""
+  # extraSettings: |
+  #   tool_result_images = "drop"
+  extraTables: ""
+
+extraEnv: []
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+
+# The data directory (/data) holds config.toml, the installation identity, and
+# in hosted mode the raw custody repository (raw-sync/) and upload spool.
+# Hosted mode requires a persistent volume.
+persistence:
+  enabled: true
+  existingClaim: ""
+  # Empty uses the cluster default. "-" sets an empty storageClassName.
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+  annotations: {}
+  # Keep the PVC when the release is uninstalled.
+  keepOnUninstall: true
+
+# Scratch space mounted at /tmp. Under Kata an ordinary emptyDir reaches the
+# guest through virtio-fs; medium Memory keeps it in guest RAM and counts
+# against the memory limit.
+tmp:
+  medium: ""
+  sizeLimit: 2Gi
+
+# RuntimeClass for the pod. Empty uses the node default (usually runc).
+# Hosted raw derivation needs a VM runtime such as kata-clh-runtime-rs or
+# kata-qemu-runtime-rs. Kata adds a fixed pod overhead (clh: 250m CPU and
+# 130Mi), and the memory limit sizes the VM.
+runtimeClassName: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# pg-serve fits in the defaults. Hosted raw derivation runs parser children
+# with up to 1 GiB of data each next to the server, so give it a memory limit
+# of at least 3Gi. Under Kata the limit sizes the VM.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+# Shutdown cancels and joins parser work before closing PostgreSQL. A parser
+# attempt may run for up to hosted.attemptSeconds.
+terminationGracePeriodSeconds: 90
+
+# The probes request the web UI root (<basePath>/). Static assets need no
+# bearer token and skip Host checks; every /api/ route, including /api/ping,
+# needs the token when auth is required.
+probes:
+  startup:
+    enabled: true
+    periodSeconds: 5
+    failureThreshold: 60
+    timeoutSeconds: 3
+  liveness:
+    enabled: true
+    periodSeconds: 20
+    failureThreshold: 3
+    timeoutSeconds: 3
+  readiness:
+    enabled: true
+    periodSeconds: 10
+    failureThreshold: 3
+    timeoutSeconds: 3
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: agents.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: agents-example-com-tls
+  #    hosts:
+  #      - agents.example.com
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""

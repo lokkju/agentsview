@@ -1,0 +1,43 @@
+{{- include "agentsview.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentsview.fullname" . }}
+  labels:
+    {{- include "agentsview.labels" . | nindent 4 }}
+data:
+  # The init container copies this file to <data dir>/config.toml on every
+  # start, prepending cursor_secret from its Secret. Edits made through the
+  # web UI's settings do not survive a restart; change values instead.
+  # It holds no credentials: the server reads PGUSER and PGPASSWORD from the
+  # environment.
+  config.toml: |
+    {{- if eq .Values.mode "hosted" }}
+    default_pg = "hosted"
+    {{- end }}
+    disable_update_check = {{ .Values.config.disableUpdateCheck }}
+    {{- with .Values.config.extraSettings }}
+    {{- . | trim | nindent 4 }}
+    {{- end }}
+    {{- if eq .Values.mode "hosted" }}
+
+    [pg.hosted]
+    url = {{ include "agentsview.pgURL" . | quote }}
+    schema = {{ .Values.hosted.schema | quote }}
+    raw_tenant = {{ .Values.hosted.tenant | quote }}
+    raw_derivation = {{ .Values.hosted.rawDerivation }}
+    raw_poll_seconds = {{ int .Values.hosted.pollSeconds }}
+    raw_attempt_seconds = {{ int .Values.hosted.attemptSeconds }}
+    raw_max_attempts = {{ int .Values.hosted.maxAttempts }}
+    allow_insecure = {{ .Values.postgres.allowInsecure }}
+    {{- else }}
+
+    [pg]
+    url = {{ include "agentsview.pgURL" . | quote }}
+    schema = {{ .Values.postgres.schema | quote }}
+    allow_insecure = {{ .Values.postgres.allowInsecure }}
+    {{- end }}
+    {{- with .Values.config.extraTables }}
+
+    {{- . | trim | nindent 4 }}
+    {{- end }}

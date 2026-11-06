@@ -1,0 +1,46 @@
+AgentsView is starting in {{ .Values.mode }} mode as {{ include "agentsview.fullname" . }}.
+
+Open it:
+{{- if .Values.server.publicURL }}
+  {{ .Values.server.publicURL }}{{ .Values.server.basePath }}/
+{{- else if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}{{ $.Values.server.basePath }}/
+{{- end }}
+{{- else }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "agentsview.fullname" . }} {{ .Values.service.port }}
+  then http://127.0.0.1:{{ .Values.service.port }}{{ .Values.server.basePath }}/
+{{- end }}
+{{- if .Values.auth.required }}
+
+The browser asks once for the bearer token from Secret {{ .Values.auth.existingSecret }}:
+  kubectl --namespace {{ .Release.Namespace }} get secret {{ .Values.auth.existingSecret }} -o jsonpath='{.data.{{ .Values.auth.tokenKey }}}' | base64 -d
+{{- else }}
+
+Authentication is off. Only expose this Service through a proxy that
+authenticates every request, and keep the pod unreachable from elsewhere.
+{{- end }}
+
+Server logs: kubectl --namespace {{ .Release.Namespace }} logs deploy/{{ include "agentsview.fullname" . }}
+{{- if not .Values.server.logToStderr }}
+(The server writes most of its log to /data/debug.log; set server.logToStderr=true to see it here.)
+{{- end }}
+{{- if eq .Values.mode "hosted" }}
+
+Hosted raw sync, tenant {{ .Values.hosted.tenant }}, schema {{ .Values.hosted.schema }}:
+{{- if .Values.hosted.provision.enabled }}
+  1. The provision Job ran hosted-provision as the schema owner.
+{{- else }}
+  1. Run `agentsview replica pg hosted-provision provision` as the schema owner.
+{{- end }}
+  2. Apply the runtime role grants from docs/hosted-raw-sync.md as the owner.
+     The server fails startup and restarts until they are complete.
+  3. Enroll each device and give it the server URL, device ID and credential.
+  4. On each machine: agentsview source raw watch
+{{- if .Values.hosted.rawDerivation }}
+
+Raw derivation runs under runtime class {{ .Values.runtimeClassName }}. The server
+tests the parser sandbox before claiming work; if it reports isolation as
+unavailable, the runtime class does not support the jail.
+{{- end }}
+{{- end }}
