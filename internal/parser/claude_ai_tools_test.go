@@ -193,3 +193,54 @@ func nilIfEmptyCallViews(views []claudeAICallView) []claudeAICallView {
 	}
 	return views
 }
+
+func TestParseClaudeAIDetailWithImages(t *testing.T) {
+	const ask = "Write a short poem about tides and check the moon phase\n\n[Attachment: notes.txt]\nSpring tide notes"
+	for _, tt := range []struct {
+		name    string
+		ref     string
+		ok      bool
+		wantAsk string
+	}{
+		{"stored image is linked after the text", "asset://0123abcd.png", true, ask + "\n\n![image](asset://0123abcd.png)"},
+		{"missing bytes leave the text unchanged", "", false, ask},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var asked []ClaudeAIFile
+			result, err := ParseClaudeAIDetailWithImages(readClaudeAIToolsDetail(t, ""), func(f ClaudeAIFile) (string, bool) {
+				asked = append(asked, f)
+				return tt.ref, tt.ok
+			})
+			require.NoError(t, err)
+			// The image listed in both files and files_v2 is asked for once;
+			// the PDF upload is not an image and keeps its attachment text.
+			assert.Equal(t, []ClaudeAIFile{{
+				UUID: "33333333-3333-4333-8333-333333333331", Name: "shore.png", Kind: "image",
+				PreviewURL: "/api/organizations/11111111-1111-4111-8111-111111111111/files/33333333-3333-4333-8333-333333333331/preview",
+			}}, asked)
+			require.Len(t, result.Messages, 4)
+			assert.Equal(t, tt.wantAsk, result.Messages[0].Content)
+			assert.Equal(t, len(tt.wantAsk), result.Messages[0].ContentLength)
+			assert.Equal(t, tt.wantAsk, result.Session.FirstMessage)
+			plain, err := ParseClaudeAIDetail(readClaudeAIToolsDetail(t, ""))
+			require.NoError(t, err)
+			assert.Equal(t, plain.Messages[1:], result.Messages[1:])
+		})
+	}
+}
+
+func TestParseClaudeAIDetailWithImages_SkipsMalformedFiles(t *testing.T) {
+	input := `{"uuid":"c","created_at":"2026-03-01T10:00:00Z","updated_at":"2026-03-01T10:05:00Z","current_leaf_message_uuid":"q","chat_messages":[` +
+		`{"uuid":"q","parent_message_uuid":"00000000-0000-4000-8000-000000000000","sender":"human","text":"Look",` +
+		`"files":["not an object",{"file_kind":"image","file_name":"no-uuid.png"}],` +
+		`"files_v2":[{"file_kind":"image","file_uuid":42},{"file_kind":"image","file_uuid":"f1","file_name":"ok.webp"}]}]}`
+	var asked []string
+	result, err := ParseClaudeAIDetailWithImages([]byte(input), func(f ClaudeAIFile) (string, bool) {
+		asked = append(asked, f.UUID)
+		return "asset://ok.webp", true
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"f1"}, asked)
+	require.Len(t, result.Messages, 1)
+	assert.Equal(t, "Look\n\n![image](asset://ok.webp)", result.Messages[0].Content)
+}

@@ -113,7 +113,8 @@ func (p *claudeAIImportOnlyProvider) ParseClaudeAIExport(
 			continue
 		}
 
-		result, err := convertClaudeAIConversation(conv)
+		// Exports carry no file bytes, so they have no images to link.
+		result, err := convertClaudeAIConversation(conv, nil)
 		if err != nil {
 			return fmt.Errorf(
 				"converting conversation %s: %w",
@@ -129,8 +130,33 @@ func (p *claudeAIImportOnlyProvider) ParseClaudeAIExport(
 	return err
 }
 
+// ClaudeAIFile is an uploaded file a Claude.ai message references in files
+// or files_v2. The API carries the file's metadata and URLs, not its bytes.
+type ClaudeAIFile struct {
+	UUID       string `json:"file_uuid"`
+	Name       string `json:"file_name"`
+	Kind       string `json:"file_kind"`
+	PreviewURL string `json:"preview_url"`
+}
+
+// ClaudeAIImageResolver returns the asset:// reference of an image whose
+// bytes the caller stored, or false when they are unavailable.
+type ClaudeAIImageResolver func(ClaudeAIFile) (assetRef string, ok bool)
+
 // ParseClaudeAIDetail selects the visible branch of a browser-fetched chat.
+// Image uploads are left out of message text; see
+// ParseClaudeAIDetailWithImages.
 func ParseClaudeAIDetail(data []byte) (ParseResult, error) {
+	return ParseClaudeAIDetailWithImages(data, nil)
+}
+
+// ParseClaudeAIDetailWithImages is ParseClaudeAIDetail with image uploads:
+// each image file the resolver returns a reference for is appended to its
+// message as a Markdown image link. A nil resolver, or one that returns
+// false, leaves the message text unchanged.
+func ParseClaudeAIDetailWithImages(
+	data []byte, images ClaudeAIImageResolver,
+) (ParseResult, error) {
 	var conv *claudeAIConversation
 	if err := json.Unmarshal(data, &conv); err != nil {
 		return ParseResult{}, err
@@ -143,7 +169,7 @@ func ParseClaudeAIDetail(data []byte) (ParseResult, error) {
 		return ParseResult{}, err
 	}
 	conv.Messages = messages
-	return convertClaudeAIConversation(*conv)
+	return convertClaudeAIConversation(*conv, images)
 }
 
 // assembleClaudeAIContent builds message content from content
@@ -255,7 +281,7 @@ func selectedClaudeAIPath(conv claudeAIConversation) ([]claudeAIMessage, error) 
 }
 
 func convertClaudeAIConversation(
-	conv claudeAIConversation,
+	conv claudeAIConversation, images ClaudeAIImageResolver,
 ) (ParseResult, error) {
 	startedAt, err := time.Parse(time.RFC3339Nano, conv.CreatedAt)
 	if err != nil {
@@ -278,6 +304,7 @@ func convertClaudeAIConversation(
 
 	for i, m := range conv.Messages {
 		content, hasThinking := assembleClaudeAIContent(m)
+		content = appendClaudeAIImages(content, m, images)
 
 		role := RoleAssistant
 		if m.Sender == "human" {
@@ -316,6 +343,45 @@ func convertClaudeAIConversation(
 		},
 		Messages: msgs,
 	}, nil
+}
+
+// appendClaudeAIImages appends a Markdown image link for each image upload
+// of m that images resolves. Links go after the existing text, so a message
+// archived without them keeps its text as a prefix.
+func appendClaudeAIImages(
+	content string, m claudeAIMessage, images ClaudeAIImageResolver,
+) string {
+	if images == nil {
+		return content
+	}
+	parts := []string{}
+	if content != "" {
+		parts = append(parts, content)
+	}
+	for _, file := range claudeAIImageFiles(m) {
+		if ref, ok := images(file); ok && ref != "" {
+			parts = append(parts, "![image]("+ref+")")
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// claudeAIImageFiles lists m's image uploads once each, files_v2 first.
+// Entries that do not decode, are not images, or have no file UUID are
+// skipped; documents keep today's attachment text instead.
+func claudeAIImageFiles(m claudeAIMessage) []ClaudeAIFile {
+	var files []ClaudeAIFile
+	seen := map[string]bool{}
+	for _, raw := range slices.Concat(m.FilesV2, m.Files) {
+		var file ClaudeAIFile
+		if json.Unmarshal(raw, &file) != nil ||
+			file.Kind != "image" || file.UUID == "" || seen[file.UUID] {
+			continue
+		}
+		seen[file.UUID] = true
+		files = append(files, file)
+	}
+	return files
 }
 
 // claudeAICallRef locates an emitted tool call by message and call index.
