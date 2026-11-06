@@ -1,5 +1,5 @@
 ---
-last_edited: 2026-11-03
+last_edited: 2026-11-06
 ---
 
 # Session Format Source Inventory
@@ -3626,6 +3626,30 @@ schemas keep their existing ordering behavior.
   from `content[].text` and thinking blocks. Malformed selected paths and
   mismatched conversation UUIDs fail before writes. Exports preserve their
   original message order.
+- **Tool blocks and uploads (2026-11-06):** Verified against the reconstructed
+  detail in `internal/importer/testdata/claude_ai_sync/detail_tools.json`; no
+  public schema covers these shapes. A reply's `content[]` interleaves `text`
+  with `tool_use` (`id`, `name`, `input`, `message`, `icon_name`) and
+  `tool_result` (`tool_use_id`, `name`, `content[]`, `is_error`) blocks.
+  Artifacts are `tool_use` with `name` `artifacts` and an `input` of `id`,
+  `command`, `type`, `title`, and `content` (or `old_str`/`new_str` for
+  updates); web search results are `knowledge` blocks with `title`, `url`, and
+  `text`; the analysis tool is `repl` with `input.code`. Each `tool_use`
+  becomes a tool call on its message with compact JSON input, and its result
+  pairs by `tool_use_id` across the branch. Message text and ordinals are the
+  same as before tool blocks were read, so pins (matched by role, text, and
+  rank) survive the refresh.
+  `TestParseClaudeAIDetail_ToolCallsAttachToTheirMessage`,
+  `TestParseClaudeAIDetail_OtherBranchesStayOut`,
+  `TestSyncClaudeAIRefreshesOldArchiveWithToolCallsInPlace`, and
+  `TestImportClaudeAIRefreshesOldArchiveWithToolCallsInPlace` cover this.
+  `files` and `files_v2` list uploads by `file_kind`, `file_uuid`,
+  `file_name`, and `preview_url`/`thumbnail_url` paths; the response holds no
+  bytes, and Chrome Sync's relay decodes bodies as text, so images are not
+  stored. `ParseClaudeAIDetailWithImages` links images a caller resolves to
+  `asset://` references, with no production caller yet. Documents keep their
+  `attachments[].extracted_content` text. Only the visible branch reaches the
+  derived tables.
 - **Chrome transport:** Reverified 2026-10-09 against the canonical request file
   and reconstructed fixtures in `TestChromeHostSyncPrivateReplies`. Native
   messaging sends replies through a private Unix socket to the server; Chrome
@@ -3652,7 +3676,9 @@ schemas keep their existing ordering behavior.
   leaf, stored message count, transcript revision, title, and end time in
   `provider_freshness`, keyed by `claude-ai` and session ID. Resync and
   `ResetAllMtimes` clear it. The hash includes a selected-branch-counts marker
-  to refresh older cached counts once. A zip re-import that changes stored
+  to refresh older cached counts once, and a parser marker that fetches every
+  cached chat once after tool calls were added (verified 2026-11-06 in
+  `TestSyncClaudeAIFullArchiveRefetchesPreToolCallFreshnessOnce`). A zip re-import that changes stored
   text, count, or title triggers a detail fetch. Title-only repairs count as
   updates and send session refresh notifications. Reverified 2026-10-11 with
   reconstructed fixtures in `TestSyncClaudeAIZipTitleFreshness` and

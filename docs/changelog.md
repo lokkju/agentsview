@@ -1,5 +1,5 @@
 ---
-last_edited: 2026-11-03
+last_edited: 2026-11-06
 title: Changelog
 description: Release history for AgentsView
 ---
@@ -10,6 +10,13 @@ The latest release is
 ## Unreleased
 
 **New features**
+
+- Claude.ai chats now show their artifacts, web searches and analysis-tool
+  runs as tool calls on the reply that made them, and search finds artifact
+  text and tool output. Re-importing an export or running Sync adds them to
+  chats you already archived, in place: pins, notes and message positions stay
+  as they were. The first Sync after upgrading fetches every cached chat once
+  to do this. Uploaded images are not stored yet.
 
 - PostgreSQL archives now keep a change journal. Installing it requires
   `CREATE` on the schema and `TRIGGER` on the watched tables. Roles without
