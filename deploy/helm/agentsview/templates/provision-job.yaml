@@ -1,0 +1,114 @@
+{{- if and (eq .Values.mode "hosted") .Values.hosted.provision.enabled }}
+{{- $creds := .Values.hosted.provision.credentials -}}
+# Runs `agentsview replica pg hosted-provision provision` as the schema owner
+# before each install and upgrade. It runs before the chart's other resources
+# exist, so it carries its own config and uses the namespace's default
+# service account without a token. Grants for the runtime role stay manual.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "agentsview.fullname" . }}-provision
+  labels:
+    helm.sh/chart: {{ include "agentsview.chart" . }}
+    app.kubernetes.io/name: {{ include "agentsview.name" . }}-provision
+    app.kubernetes.io/part-of: {{ .Release.Name }}
+    app.kubernetes.io/component: provision
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.hosted.provision.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.hosted.provision.activeDeadlineSeconds }}
+  template:
+    metadata:
+      # Not the Deployment's selector labels, so the Service never routes here.
+      labels:
+        app.kubernetes.io/name: {{ include "agentsview.name" . }}-provision
+        app.kubernetes.io/part-of: {{ .Release.Name }}
+        app.kubernetes.io/component: provision
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: provision
+          image: {{ include "agentsview.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              umask 077
+              cat > "$AGENTSVIEW_DATA_DIR/config.toml" <<'EOF'
+              default_pg = "provision"
+              disable_update_check = true
+
+              [pg.provision]
+              url = {{ include "agentsview.pgURL" . | quote }}
+              schema = {{ .Values.hosted.schema | quote }}
+              raw_tenant = {{ .Values.hosted.tenant | quote }}
+              allow_insecure = {{ .Values.postgres.allowInsecure }}
+              EOF
+              exec /usr/local/bin/agentsview replica pg hosted-provision provision
+          env:
+            - name: AGENTSVIEW_DATA_DIR
+              value: /data
+            - name: HOME
+              value: /tmp
+            - name: TMPDIR
+              value: /tmp
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $creds.existingSecret }}
+                  key: {{ $creds.usernameKey }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $creds.existingSecret }}
+                  key: {{ $creds.passwordKey }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.hosted.provision.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.postgres.caSecret.name }}
+            - name: postgres-ca
+              mountPath: /etc/agentsview/postgres-ca
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.postgres.caSecret.name }}
+        - name: postgres-ca
+          secret:
+            secretName: {{ .Values.postgres.caSecret.name }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.postgres.caSecret.key }}
+                path: ca.crt
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

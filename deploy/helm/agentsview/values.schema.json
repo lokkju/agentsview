@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "agentsview chart values",
+  "type": "object",
+  "required": ["mode", "image", "postgres", "auth", "server", "persistence"],
+  "properties": {
+    "mode": {
+      "description": "pg-serve serves a schema filled by workstation pushes; hosted runs hosted raw sync.",
+      "type": "string",
+      "enum": ["pg-serve", "hosted"]
+    },
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": {"type": "string"},
+        "tag": {"type": ["string", "number"]},
+        "digest": {"type": "string", "pattern": "^(sha256:[a-f0-9]{64})?$"},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "imagePullSecrets": {"type": "array"},
+    "nameOverride": {"type": "string"},
+    "fullnameOverride": {"type": "string"},
+    "postgres": {
+      "type": "object",
+      "required": ["host", "port", "database", "sslMode", "credentials"],
+      "properties": {
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "database": {"type": "string", "minLength": 1},
+        "sslMode": {
+          "type": "string",
+          "enum": ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
+        },
+        "caSecret": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string"},
+            "key": {"type": "string", "minLength": 1}
+          }
+        },
+        "allowInsecure": {"type": "boolean"},
+        "schema": {"type": "string", "pattern": "^[a-z_][a-z0-9_]*$"},
+        "credentials": {"$ref": "#/definitions/credentials"}
+      }
+    },
+    "hosted": {
+      "type": "object",
+      "properties": {
+        "schema": {"type": "string", "pattern": "^[a-z_][a-z0-9_]*$"},
+        "tenant": {"type": "string"},
+        "rawDerivation": {"type": "boolean"},
+        "pollSeconds": {"type": "integer", "minimum": 1, "maximum": 60},
+        "attemptSeconds": {"type": "integer", "minimum": 1, "maximum": 300},
+        "maxAttempts": {"type": "integer", "minimum": 1, "maximum": 10},
+        "requireKataRuntime": {"type": "boolean"},
+        "provision": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "credentials": {"$ref": "#/definitions/credentials"},
+            "backoffLimit": {"type": "integer", "minimum": 0},
+            "activeDeadlineSeconds": {"type": "integer", "minimum": 1},
+            "resources": {"type": "object"}
+          }
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "required": ["required"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "existingSecret": {"type": "string"},
+        "tokenKey": {"type": "string", "minLength": 1}
+      }
+    },
+    "cursorSecret": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {"type": "string"},
+        "key": {"type": "string", "minLength": 1}
+      }
+    },
+    "server": {
+      "type": "object",
+      "properties": {
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "basePath": {"type": "string", "pattern": "^(/[^/].*[^/]|/[^/])?$"},
+        "publicURL": {"type": "string", "pattern": "^(https?://[^/]+)?$"},
+        "publicOrigins": {"type": "array", "items": {"type": "string"}},
+        "writeTimeout": {"type": "string"},
+        "logToStderr": {"type": "boolean"},
+        "extraArgs": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "disableUpdateCheck": {"type": "boolean"},
+        "extraSettings": {"type": "string"},
+        "extraTables": {"type": "string"}
+      }
+    },
+    "extraEnv": {"type": "array"},
+    "extraEnvFrom": {"type": "array"},
+    "extraVolumes": {"type": "array"},
+    "extraVolumeMounts": {"type": "array"},
+    "persistence": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "existingClaim": {"type": "string"},
+        "storageClass": {"type": "string"},
+        "accessModes": {"type": "array", "items": {"type": "string"}},
+        "size": {"type": "string"},
+        "annotations": {"type": "object"},
+        "keepOnUninstall": {"type": "boolean"}
+      }
+    },
+    "tmp": {
+      "type": "object",
+      "properties": {
+        "medium": {"type": "string", "enum": ["", "Memory"]},
+        "sizeLimit": {"type": "string"}
+      }
+    },
+    "runtimeClassName": {"type": "string"},
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": {"type": "boolean"},
+        "name": {"type": "string"},
+        "annotations": {"type": "object"},
+        "automountToken": {"type": "boolean"}
+      }
+    },
+    "podAnnotations": {"type": "object"},
+    "podLabels": {"type": "object"},
+    "podSecurityContext": {"type": "object"},
+    "securityContext": {"type": "object"},
+    "resources": {"type": "object"},
+    "terminationGracePeriodSeconds": {"type": "integer", "minimum": 0},
+    "probes": {
+      "type": "object",
+      "properties": {
+        "startup": {"$ref": "#/definitions/probe"},
+        "liveness": {"$ref": "#/definitions/probe"},
+        "readiness": {"$ref": "#/definitions/probe"}
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": {"type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"]},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "annotations": {"type": "object"}
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "className": {"type": "string"},
+        "annotations": {"type": "object"},
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["host", "paths"],
+            "properties": {
+              "host": {"type": "string"},
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["path"],
+                  "properties": {
+                    "path": {"type": "string"},
+                    "pathType": {"type": "string", "enum": ["Prefix", "Exact", "ImplementationSpecific"]}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tls": {"type": "array"}
+      }
+    },
+    "nodeSelector": {"type": "object"},
+    "tolerations": {"type": "array"},
+    "affinity": {"type": "object"},
+    "priorityClassName": {"type": "string"}
+  },
+  "definitions": {
+    "credentials": {
+      "type": "object",
+      "required": ["existingSecret", "usernameKey", "passwordKey"],
+      "properties": {
+        "existingSecret": {"type": "string"},
+        "usernameKey": {"type": "string", "minLength": 1},
+        "passwordKey": {"type": "string", "minLength": 1}
+      }
+    },
+    "probe": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "periodSeconds": {"type": "integer", "minimum": 1},
+        "failureThreshold": {"type": "integer", "minimum": 1},
+        "timeoutSeconds": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

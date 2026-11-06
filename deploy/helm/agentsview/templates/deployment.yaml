@@ -1,0 +1,272 @@
+{{- $probePath := printf "%s/" (trimSuffix "/" .Values.server.basePath) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentsview.fullname" . }}
+  labels:
+    {{- include "agentsview.labels" . | nindent 4 }}
+spec:
+  # One instance per tenant and data directory. The data volume is
+  # ReadWriteOnce, so the old pod must stop before the new one starts.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "agentsview.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "agentsview.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "agentsview.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      {{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        # Writes config.toml into the data directory. config.toml must live
+        # there, and the server writes other files next to it, so it cannot be
+        # a read-only ConfigMap mount.
+        - name: config
+          image: {{ include "agentsview.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              umask 077
+              out="$AGENTSVIEW_DATA_DIR/config.toml.new"
+              : > "$out"
+              if [ -s /run/secrets/agentsview/cursor/cursor-secret ]; then
+                secret=$(tr -d ' \r\n' < /run/secrets/agentsview/cursor/cursor-secret)
+                printf 'cursor_secret = "%s"\n' "$secret" >> "$out"
+              fi
+              cat /etc/agentsview/config/config.toml >> "$out"
+              mv -f "$out" "$AGENTSVIEW_DATA_DIR/config.toml"
+              log="$AGENTSVIEW_DATA_DIR/debug.log"
+              if [ "$LOG_TO_STDERR" = "true" ]; then
+                ln -sfn /dev/stderr "$log"
+              elif [ -L "$log" ]; then
+                rm -f "$log"
+              fi
+          env:
+            - name: AGENTSVIEW_DATA_DIR
+              value: /data
+            - name: LOG_TO_STDERR
+              value: {{ .Values.server.logToStderr | quote }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/agentsview/config
+              readOnly: true
+            {{- if .Values.cursorSecret.existingSecret }}
+            - name: cursor-secret
+              mountPath: /run/secrets/agentsview/cursor
+              readOnly: true
+            {{- end }}
+      containers:
+        - name: agentsview
+          image: {{ include "agentsview.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - replica
+            - pg
+            - serve
+            - --no-browser
+            # The --host flag, unlike AGENTSVIEW_HOST, also permits an
+            # unauthenticated bind behind an authenticating proxy.
+            - --host=0.0.0.0
+            - --port={{ .Values.server.port }}
+            {{- with .Values.server.basePath }}
+            - --base-path={{ . }}
+            {{- end }}
+            {{- with .Values.server.publicURL }}
+            - --public-url={{ . }}
+            {{- end }}
+            {{- range .Values.server.publicOrigins }}
+            - --public-origin={{ . }}
+            {{- end }}
+            {{- with .Values.server.writeTimeout }}
+            - --write-timeout={{ . }}
+            {{- end }}
+            {{- range .Values.server.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            # Enables the container deployment variables below.
+            - name: AGENTSVIEW_MODE
+              value: pg-serve
+            - name: AGENTSVIEW_DATA_DIR
+              value: /data
+            - name: AGENTSVIEW_NO_BROWSER
+              value: "true"
+            - name: AGENTSVIEW_REQUIRE_AUTH
+              value: {{ .Values.auth.required | quote }}
+            {{- if .Values.auth.existingSecret }}
+            - name: AGENTSVIEW_AUTH_TOKEN_FILE
+              value: /run/secrets/agentsview/auth/token
+            {{- end }}
+            - name: HOME
+              value: /tmp
+            - name: TMPDIR
+              value: /tmp
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.credentials.existingSecret }}
+                  key: {{ .Values.postgres.credentials.usernameKey }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.credentials.existingSecret }}
+                  key: {{ .Values.postgres.credentials.passwordKey }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.port }}
+              protocol: TCP
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ $probePath }}
+              port: http
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+          {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ $probePath }}
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ $probePath }}
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.auth.existingSecret }}
+            - name: auth-token
+              mountPath: /run/secrets/agentsview/auth
+              readOnly: true
+            {{- end }}
+            {{- if .Values.postgres.caSecret.name }}
+            - name: postgres-ca
+              mountPath: /etc/agentsview/postgres-ca
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "agentsview.pvcName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir:
+            {{- with .Values.tmp.medium }}
+            medium: {{ . }}
+            {{- end }}
+            {{- with .Values.tmp.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+        - name: config
+          configMap:
+            name: {{ include "agentsview.fullname" . }}
+        {{- if .Values.cursorSecret.existingSecret }}
+        - name: cursor-secret
+          secret:
+            secretName: {{ .Values.cursorSecret.existingSecret }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.cursorSecret.key }}
+                path: cursor-secret
+        {{- end }}
+        {{- if .Values.auth.existingSecret }}
+        - name: auth-token
+          secret:
+            secretName: {{ .Values.auth.existingSecret }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.auth.tokenKey }}
+                path: token
+        {{- end }}
+        {{- if .Values.postgres.caSecret.name }}
+        - name: postgres-ca
+          secret:
+            secretName: {{ .Values.postgres.caSecret.name }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.postgres.caSecret.key }}
+                path: ca.crt
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
