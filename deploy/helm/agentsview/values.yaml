@@ -207,7 +207,8 @@ securityContext:
 
 # pg-serve fits in the defaults. Hosted raw derivation runs parser children
 # with up to 1 GiB of data each next to the server, so give it a memory limit
-# of at least 3Gi. Under Kata the limit sizes the VM.
+# of at least 3Gi. Under Kata the limits size the VM: without a CPU limit the
+# guest gets one vCPU, so also set a CPU limit, such as "2".
 resources:
   requests:
     cpu: 100m

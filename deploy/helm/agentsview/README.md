@@ -195,8 +195,11 @@ Kata changes resource planning:
 
 - `kata-clh-runtime-rs` adds a fixed pod overhead of 250m CPU and 130Mi;
   `kata-qemu-runtime-rs` adds 320Mi.
-- The memory limit sizes the VM. Parser children may use up to 1 GiB of data
-  each next to the server's own working set, so start at a 3Gi to 4Gi limit.
+- The limits size the VM. Parser children may use up to 1 GiB of data each
+  next to the server's own working set, so start at a 3Gi to 4Gi memory limit.
+- Set a CPU limit. Without one the guest gets Kata's default of one vCPU, and
+  the server, the parser children and PostgreSQL I/O share it. A CPU limit adds
+  vCPUs to the guest; start at `2`.
 - `kubectl port-forward` cannot reach the pod. It connects to the pod's network
   namespace on the node, and under Kata the server listens inside the VM. Reach
   the server through the Ingress or from a pod in the cluster, such as a
@@ -391,6 +394,7 @@ resources:
     cpu: 500m
     memory: 1Gi
   limits:
+    cpu: "2"
     memory: 4Gi
 ```
 
@@ -550,4 +554,4 @@ The most-used values follow. `values.yaml` documents every value, and
 | `networkPolicy.enabled`         | `false`                  | Render an ingress policy that admits kubelet probes          |
 | `persistence.enabled`           | `true`                   | Persistent data volume; required in `hosted` mode            |
 | `persistence.keepOnUninstall`   | `true`                   | Keep the PVC when the release is uninstalled                 |
-| `resources`                     | 256Mi request, 1Gi limit | Raise the limit to 3Gi or more for hosted raw derivation     |
+| `resources`                     | 256Mi request, 1Gi limit | For hosted raw derivation under Kata, 3Gi or more and a CPU limit |

@@ -44,6 +44,8 @@ resources:
     cpu: 500m
     memory: 1Gi
   limits:
+    # Kata sizes the guest from the limits; without a CPU limit it gets one vCPU.
+    cpu: "2"
     memory: 4Gi
 
 ingress:
