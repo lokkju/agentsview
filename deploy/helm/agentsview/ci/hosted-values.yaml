@@ -58,3 +58,17 @@ ingress:
     - secretName: agents-example-com-tls
       hosts:
         - agents.example.com
+
+networkPolicy:
+  enabled: true
+  type: kubernetes
+  nodeCIDRs:
+    - 192.0.2.0/24
+  extraIngress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - port: http
+          protocol: TCP

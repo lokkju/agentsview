@@ -189,6 +189,15 @@
         "tls": {"type": "array"}
       }
     },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "type": {"type": "string", "enum": ["kubernetes", "cilium"]},
+        "nodeCIDRs": {"type": "array", "items": {"type": "string"}},
+        "extraIngress": {"type": "array", "items": {"type": "object"}}
+      }
+    },
     "nodeSelector": {"type": "object"},
     "tolerations": {"type": "array"},
     "affinity": {"type": "object"},

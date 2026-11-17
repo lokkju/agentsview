@@ -258,6 +258,23 @@ ingress:
   #    hosts:
   #      - agents.example.com
 
+# Optional ingress policy for the server pod, off by default. Clusters with a
+# default-deny ingress policy must admit kubelet probes, which come from the
+# node, on server.port; without that the probes fail and the pod restarts.
+networkPolicy:
+  enabled: false
+  # kubernetes renders a networking.k8s.io/v1 NetworkPolicy, which can admit
+  # the node only by address (nodeCIDRs). cilium renders a cilium.io/v2
+  # CiliumNetworkPolicy that admits Cilium's host entity, which matches
+  # kubelet probes without listing addresses.
+  type: kubernetes
+  # kubernetes only, and required with it: the CIDRs kubelet probes come from,
+  # usually the node addresses.
+  nodeCIDRs: []
+  # More ingress rules, appended verbatim in the chosen type's format. Use them
+  # to admit the ingress controller and any in-cluster clients.
+  extraIngress: []
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

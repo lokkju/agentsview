@@ -12,8 +12,8 @@ of two modes:
 
 Both modes run `agentsview replica pg serve`. The chart creates a Deployment, a
 Service, a ConfigMap for `config.toml`, a PersistentVolumeClaim, a
-ServiceAccount and, optionally, an Ingress and a provisioning Job. It creates no
-namespace, no Secrets, no NetworkPolicy and no database.
+ServiceAccount and, optionally, an Ingress, a NetworkPolicy and a provisioning
+Job. It creates no namespace, no Secrets and no database.
 
 Read [PostgreSQL Sync](../../../docs/pg-sync.md) for `pg-serve` and
 [Hosted Raw Sync](../../../docs/hosted-raw-sync.md) for `hosted` before you
@@ -46,8 +46,35 @@ runs as uid 1000 with a read-only root filesystem, no privilege escalation, all
 capabilities dropped and the `RuntimeDefault` seccomp profile.
 
 The pod needs DNS and a route to PostgreSQL. If a network policy (Cilium or
-otherwise) blocks egress by default, allow both for the release's pods. The
-chart adds no policy of its own.
+otherwise) blocks egress by default, allow both for the release's pods.
+
+If a network policy denies ingress by default, it also blocks the kubelet's
+startup, liveness and readiness probes, which come from the node to
+`server.port`. The pod then never becomes ready and keeps restarting. Admit the
+node on that port, along with your ingress controller. The chart can render that
+policy for you, off by default:
+
+```yaml
+networkPolicy:
+  enabled: true
+  # cilium renders a CiliumNetworkPolicy that admits the host entity.
+  # kubernetes renders a NetworkPolicy and needs nodeCIDRs.
+  type: cilium
+  extraIngress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: traefik
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+```
+
+With `type: kubernetes`, list the node addresses in `networkPolicy.nodeCIDRs`
+and write `extraIngress` as `networking.k8s.io/v1` ingress rules. Rendering
+fails if `nodeCIDRs` is empty, because the policy would block the probes. Some
+CNIs, Cilium among them by default, do not match node traffic by `ipBlock`; use
+`type: cilium` there. The policy restricts only ingress.
 
 ### Create the Secrets
 
@@ -170,6 +197,12 @@ Kata changes resource planning:
   `kata-qemu-runtime-rs` adds 320Mi.
 - The memory limit sizes the VM. Parser children may use up to 1 GiB of data
   each next to the server's own working set, so start at a 3Gi to 4Gi limit.
+- `kubectl port-forward` cannot reach the pod. It connects to the pod's network
+  namespace on the node, and under Kata the server listens inside the VM. Reach
+  the server through the Ingress or from a pod in the cluster, such as a
+  `curlimages/curl` pod. Under the `restricted` Pod Security profile that pod
+  needs its own non-root security context, and a default-deny policy must admit
+  it.
 - The data volume, `/tmp` and Secrets reach the guest through virtio-fs, which
   is slow for I/O-heavy work. Set `tmp.medium: Memory` to keep scratch space in
   guest RAM; it then counts against the memory limit.
@@ -426,8 +459,9 @@ everything. Then:
   it), and list any other browser origins in `server.publicOrigins`. The server
   checks `Host` and `Origin` against them.
 - Drop the bearer route above. MCP clients and scripts must reach the server
-  some other way that is not public, such as `kubectl port-forward`, because the
-  server trusts every request it receives.
+  some other way that is not public, such as `kubectl port-forward` (not under
+  Kata) or an in-cluster pod, because the server trusts every request it
+  receives.
 - Make sure nothing but the proxy can reach the pod.
 
 The chart passes `--host=0.0.0.0` as a flag, which `pg serve` accepts without
@@ -442,7 +476,9 @@ The startup, liveness and readiness probes request `<basePath>/`, the web UI's
 root. Static assets need no token and skip `Host` checks. Every `/api/` route,
 `/api/ping` included, returns 401 without the token, so the probes cannot use
 them. The probes show that the listener is up; they do not show that PostgreSQL
-is reachable or that the parser worker is healthy.
+is reachable or that the parser worker is healthy. A default-deny ingress
+policy blocks them unless it admits the node; see
+[Prepare the namespace](#prepare-the-namespace).
 
 ## Storage, configuration and logs
 
@@ -511,6 +547,7 @@ The most-used values follow. `values.yaml` documents every value, and
 | `cursorSecret.existingSecret`   | empty                    | Secret with the cursor HMAC key                              |
 | `server.publicURL`              | empty                    | Browser URL behind an ingress or proxy                       |
 | `server.basePath`               | empty                    | URL prefix when mounted below a path                         |
+| `networkPolicy.enabled`         | `false`                  | Render an ingress policy that admits kubelet probes          |
 | `persistence.enabled`           | `true`                   | Persistent data volume; required in `hosted` mode            |
 | `persistence.keepOnUninstall`   | `true`                   | Keep the PVC when the release is uninstalled                 |
 | `resources`                     | 256Mi request, 1Gi limit | Raise the limit to 3Gi or more for hosted raw derivation     |

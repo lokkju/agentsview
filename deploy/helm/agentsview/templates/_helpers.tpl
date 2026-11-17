@@ -156,6 +156,9 @@ GRANT USAGE ON SEQUENCE {{ $s }}.raw_ingest_jobs_id_seq, {{ $s }}.tool_calls_id_
 {{- if and (not $v.auth.required) (not $v.server.publicURL) -}}
 {{- fail "auth.required=false is meant for a server behind an authenticating proxy; set server.publicURL to the proxy's browser URL." -}}
 {{- end -}}
+{{- if and $v.networkPolicy.enabled (eq $v.networkPolicy.type "kubernetes") (not $v.networkPolicy.nodeCIDRs) -}}
+{{- fail "networkPolicy.type kubernetes needs networkPolicy.nodeCIDRs: kubelet probes come from the node, and without its addresses the policy blocks them. On Cilium, set networkPolicy.type=cilium instead." -}}
+{{- end -}}
 {{- if eq $v.mode "hosted" -}}
 {{- if not $v.postgres.credentials.existingSecret -}}
 {{- fail "hosted mode requires postgres.credentials.existingSecret: a Secret for a dedicated runtime role that owns nothing and has no privileges on any other schema. The CNPG application Secret does not qualify: that role owns the database, and the server refuses it. See README.md, \"Create the runtime role\"." -}}

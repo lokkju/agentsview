@@ -7,6 +7,11 @@ Open it:
 {{- range .Values.ingress.hosts }}
   http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}{{ $.Values.server.basePath }}/
 {{- end }}
+{{- else if contains "kata" .Values.runtimeClassName }}
+  The pod runs under Kata, where kubectl port-forward cannot reach it: the
+  server listens inside the VM, not in the pod's network namespace on the node.
+  Enable the Ingress, or reach the Service from inside the cluster:
+  kubectl --namespace {{ .Release.Namespace }} run agentsview-curl --rm -it --restart=Never --image=curlimages/curl:8.11.1 -- curl -sS http://{{ include "agentsview.fullname" . }}:{{ .Values.service.port }}{{ .Values.server.basePath }}/
 {{- else }}
   kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "agentsview.fullname" . }} {{ .Values.service.port }}
   then http://127.0.0.1:{{ .Values.service.port }}{{ .Values.server.basePath }}/
@@ -19,6 +24,13 @@ The browser asks once for the bearer token from Secret {{ .Values.auth.existingS
 
 Authentication is off. Only expose this Service through a proxy that
 authenticates every request, and keep the pod unreachable from elsewhere.
+{{- end }}
+
+{{- if not .Values.networkPolicy.enabled }}
+
+If a network policy denies ingress to this namespace by default, admit
+kubelet probes from the node on port {{ .Values.server.port }}, or the pod never becomes ready
+and restarts. networkPolicy.enabled renders such a policy; see README.md.
 {{- end }}
 
 Server logs: kubectl --namespace {{ .Release.Namespace }} logs deploy/{{ include "agentsview.fullname" . }}
