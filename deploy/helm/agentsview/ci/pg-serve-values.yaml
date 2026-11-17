@@ -1,0 +1,37 @@
+# Read-only replica serving a PostgreSQL schema that workstations fill with
+# `agentsview replica pg push`. Used by `helm lint` and `helm template`.
+image:
+  repository: registry.example.com/agentsview
+  tag: 0.46.1-1a2b3c4
+
+postgres:
+  host: agentsview-db-rw
+  database: app
+  schema: agentsview
+  sslMode: verify-full
+  caSecret:
+    name: agentsview-db-ca
+  credentials:
+    existingSecret: agentsview-db-reader
+
+auth:
+  existingSecret: agentsview-auth
+
+server:
+  publicURL: https://agents.example.com
+
+persistence:
+  enabled: false
+
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    - host: agents.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: agents-example-com-tls
+      hosts:
+        - agents.example.com

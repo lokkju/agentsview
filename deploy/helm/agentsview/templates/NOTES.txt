@@ -1,0 +1,66 @@
+AgentsView is starting in {{ .Values.mode }} mode as {{ include "agentsview.fullname" . }}.
+
+Open it:
+{{- if .Values.server.publicURL }}
+  {{ .Values.server.publicURL }}{{ .Values.server.basePath }}/
+{{- else if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}{{ $.Values.server.basePath }}/
+{{- end }}
+{{- else if contains "kata" .Values.runtimeClassName }}
+  The pod runs under Kata, where kubectl port-forward cannot reach it: the
+  server listens inside the VM, not in the pod's network namespace on the node.
+  Enable the Ingress, or reach the Service from inside the cluster:
+  kubectl --namespace {{ .Release.Namespace }} run agentsview-curl --rm -it --restart=Never --image=curlimages/curl:8.11.1 -- curl -sS http://{{ include "agentsview.fullname" . }}:{{ .Values.service.port }}{{ .Values.server.basePath }}/
+{{- else }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "agentsview.fullname" . }} {{ .Values.service.port }}
+  then http://127.0.0.1:{{ .Values.service.port }}{{ .Values.server.basePath }}/
+{{- end }}
+{{- if .Values.auth.required }}
+
+The browser asks once for the bearer token from Secret {{ .Values.auth.existingSecret }}:
+  kubectl --namespace {{ .Release.Namespace }} get secret {{ .Values.auth.existingSecret }} -o jsonpath='{.data.{{ .Values.auth.tokenKey }}}' | base64 -d
+{{- else }}
+
+Authentication is off. Only expose this Service through a proxy that
+authenticates every request, and keep the pod unreachable from elsewhere.
+{{- end }}
+
+{{- if not .Values.networkPolicy.enabled }}
+
+If a network policy denies ingress to this namespace by default, admit
+kubelet probes from the node on port {{ .Values.server.port }}, or the pod never becomes ready
+and restarts. networkPolicy.enabled renders such a policy; see README.md.
+{{- end }}
+
+Server logs: kubectl --namespace {{ .Release.Namespace }} logs deploy/{{ include "agentsview.fullname" . }}
+{{- if not .Values.server.logToStderr }}
+(The server writes most of its log to /data/agentsview/debug.log; set server.logToStderr=true to see it here.)
+{{- end }}
+{{- if eq .Values.mode "hosted" }}
+
+Hosted raw sync, tenant {{ .Values.hosted.tenant }}, schema {{ .Values.hosted.schema }}:
+{{- if .Values.hosted.provision.enabled }}
+  1. The provision Job ran hosted-provision as the schema owner.
+{{- else }}
+  1. Run `agentsview replica pg hosted-provision provision` as the schema owner.
+{{- end }}
+  2. Grant the runtime role access as the schema owner or a superuser. The
+     image has no psql; use `kubectl cnpg psql <cluster> -- -d {{ .Values.postgres.database }}` or any
+     client. The server exits at startup and restarts until the grants are
+     complete. Run them again after every upgrade. Replace RUNTIME_ROLE with
+     the login in Secret {{ .Values.postgres.credentials.existingSecret }}:
+
+{{ include "agentsview.runtimeGrants" . | indent 6 }}
+
+  3. Skip the crash back-off:
+       kubectl --namespace {{ .Release.Namespace }} rollout restart deploy/{{ include "agentsview.fullname" . }}
+  4. Enroll each device and give it the server URL, device ID and credential.
+  5. On each machine: agentsview source raw backfill, then agentsview source raw watch
+{{- if .Values.hosted.rawDerivation }}
+
+Raw derivation runs under runtime class {{ .Values.runtimeClassName }}. The server
+tests the parser sandbox before claiming work; if it reports isolation as
+unavailable, the runtime class does not support the jail.
+{{- end }}
+{{- end }}

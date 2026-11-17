@@ -1,0 +1,17 @@
+apiVersion: v2
+name: agentsview
+description: Run AgentsView as a hosted server on Kubernetes, serving from PostgreSQL
+type: application
+# Chart version (SemVer). Bump it on every chart change.
+version: 0.1.0
+# The AgentsView release this chart was written against. The chart never uses
+# it as an image tag; set image.repository and image.tag explicitly.
+appVersion: "0.46.1"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/kenn-io/agentsview
+sources:
+  - https://github.com/kenn-io/agentsview
+keywords:
+  - agentsview
+  - ai-agents
+  - postgresql
