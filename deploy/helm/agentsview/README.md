@@ -85,7 +85,7 @@ password or token as a value.
 | ------------------------------ | ---------------------- | --------------------------- | ------------------------------ |
 | `auth.existingSecret`          | `token`                | Web UI, API and MCP clients | When `auth.required` is true   |
 | `cursorSecret.existingSecret`  | `cursor-secret`        | Signed pagination cursors   | In `hosted` mode               |
-| `postgres.credentials`         | `username`, `password` | The running server          | In `hosted` mode               |
+| `postgres.credentials`         | `username`, `password` | The running server          | Always; no default in `hosted` |
 | `hosted.provision.credentials` | `username`, `password` | The provisioning Job        | When the Job is enabled        |
 | `postgres.caSecret`            | `ca.crt`               | TLS verification            | For `verify-ca`, `verify-full` |
 
@@ -169,8 +169,8 @@ workstation pushes.
 ## Mode: hosted
 
 Devices upload original session files, and the server keeps them in a raw
-custody repository under `/data/agentsview/raw-sync/` on the persistent volume. With
-`hosted.rawDerivation` (the default) it parses each upload in a sandbox and
+custody repository under `/data/agentsview/raw-sync/` on the persistent volume.
+With `hosted.rawDerivation` (the default) it parses each upload in a sandbox and
 writes sessions into one tenant's schema.
 
 ### The sandbox needs Kata
@@ -195,8 +195,8 @@ Kata changes resource planning:
 
 - `kata-clh-runtime-rs` adds a fixed pod overhead of 250m CPU and 130Mi;
   `kata-qemu-runtime-rs` adds 320Mi.
-- The limits size the VM. Parser children may use up to 1 GiB of data each
-  next to the server's own working set, so start at a 3Gi to 4Gi memory limit.
+- The limits size the VM. Parser children may use up to 1 GiB of data each next
+  to the server's own working set, so start at a 3Gi to 4Gi memory limit.
 - Set a CPU limit. Without one the guest gets Kata's default of one vCPU, and
   the server, the parser children and PostgreSQL I/O share it. A CPU limit adds
   vCPUs to the guest; start at `2`.
@@ -246,8 +246,8 @@ spec:
 The password Secret has type `kubernetes.io/basic-auth` with `username` and
 `password` keys. The server checks the role at startup and refuses it when:
 
-- it is a member of any role, or is a superuser or has `CREATEDB`,
-  `CREATEROLE`, `REPLICATION` or `BYPASSRLS`;
+- it is a member of any role, or is a superuser or has `CREATEDB`, `CREATEROLE`,
+  `REPLICATION` or `BYPASSRLS`;
 - it has `CREATE` on the database or on any schema;
 - it owns any schema, table, view or sequence;
 - it has `USAGE` on any schema other than the tenant schema and `public`, or any
@@ -331,10 +331,12 @@ the first install cannot finish healthy on its own. Install without `--wait` or
 `--atomic`, then grant:
 
 1. Create the runtime role and the Secrets (see above).
+
 1. Write a values file like the one below. With `hosted.provision.enabled`, a
    pre-install hook Job runs `agentsview replica pg hosted-provision provision`
    as the owner before the server starts. Without it, run that command yourself
    with an owner connection first.
+
 1. Install the chart:
 
    ```bash
@@ -345,10 +347,13 @@ the first install cannot finish healthy on its own. Install without `--wait` or
    The server exits at startup and Kubernetes restarts it until the next step.
 
 1. Run the [runtime grants](#grant-the-runtime-role).
+
 1. Restart the server so it does not wait out its crash back-off:
    `kubectl -n agentsview rollout restart deploy/agentsview`.
+
 1. Enroll each device and give it the server URL, device ID and credential.
    AgentsView has no enrollment command or endpoint yet.
+
 1. On each machine, run `agentsview source raw backfill` once, then
    `agentsview source raw watch`.
 
@@ -480,8 +485,8 @@ The startup, liveness and readiness probes request `<basePath>/`, the web UI's
 root. Static assets need no token and skip `Host` checks. Every `/api/` route,
 `/api/ping` included, returns 401 without the token, so the probes cannot use
 them. The probes show that the listener is up; they do not show that PostgreSQL
-is reachable or that the parser worker is healthy. A default-deny ingress
-policy blocks them unless it admits the node; see
+is reachable or that the parser worker is healthy. A default-deny ingress policy
+blocks them unless it admits the node; see
 [Prepare the namespace](#prepare-the-namespace).
 
 ## Storage, configuration and logs
@@ -494,14 +499,15 @@ start.
 
 `config.toml` must live in the data directory, and the server writes other files
 next to it. The init container copies the ConfigMap's `config.toml` there on
-every start and prepends `cursor_secret` from its Secret. Changes made
-in the web UI's settings do not survive a restart; change the chart's values
-instead. `config.extraSettings` adds top-level keys and `config.extraTables`
-adds whole tables.
+every start and prepends `cursor_secret` from its Secret. Changes made in the
+web UI's settings do not survive a restart; change the chart's values instead.
+`config.extraSettings` adds top-level keys and `config.extraTables` adds whole
+tables.
 
-The server writes its log to `/data/agentsview/debug.log`. With `server.logToStderr: true`
-(the default) the init container makes that file a symlink to the container's
-stderr, so `kubectl logs` shows it. The server never rotates a symlinked log.
+The server writes its log to `/data/agentsview/debug.log`. With
+`server.logToStderr: true` (the default) the init container makes that file a
+symlink to the container's stderr, so `kubectl logs` shows it. The server never
+rotates a symlinked log.
 
 `/tmp` is an `emptyDir`. `HOME` and `TMPDIR` point at it, so nothing writes to
 the read-only root filesystem. Raw custody keeps its lock registry in
@@ -530,26 +536,26 @@ The Deployment runs one replica with the `Recreate` strategy. The data volume is
 The most-used values follow. `values.yaml` documents every value, and
 `values.schema.json` validates them.
 
-| Value                           | Default                  | Purpose                                                      |
-| ------------------------------- | ------------------------ | ------------------------------------------------------------ |
-| `mode`                          | `pg-serve`               | `pg-serve` or `hosted`                                       |
-| `image.repository`, `image.tag` | none                     | Required; pin an exact build                                 |
-| `runtimeClassName`              | empty                    | Pod runtime class; a Kata class for hosted raw derivation    |
-| `postgres.host`                 | `agentsview-db-rw`       | PostgreSQL host                                              |
-| `postgres.database`             | `app`                    | Database name                                                |
-| `postgres.sslMode`              | `require`                | `require`, `verify-ca` or `verify-full`                      |
-| `postgres.schema`               | `agentsview`             | Schema served in `pg-serve` mode                             |
-| `postgres.credentials`          | see purpose              | Server login; `agentsview-db-app` in `pg-serve`, required in `hosted` |
-| `hosted.tenant`                 | empty                    | Required in `hosted` mode                                    |
-| `hosted.schema`                 | `hosted_sessions`        | Tenant schema                                                |
-| `hosted.rawDerivation`          | `true`                   | Parse uploads into PostgreSQL                                |
-| `hosted.provision.enabled`      | `false`                  | Run `hosted-provision` as a pre-install and pre-upgrade hook |
-| `auth.required`                 | `true`                   | Require the bearer token on `/api/`                          |
-| `auth.existingSecret`           | empty                    | Secret with the bearer token                                 |
-| `cursorSecret.existingSecret`   | empty                    | Secret with the cursor HMAC key                              |
-| `server.publicURL`              | empty                    | Browser URL behind an ingress or proxy                       |
-| `server.basePath`               | empty                    | URL prefix when mounted below a path                         |
-| `networkPolicy.enabled`         | `false`                  | Render an ingress policy that admits kubelet probes          |
-| `persistence.enabled`           | `true`                   | Persistent data volume; required in `hosted` mode            |
-| `persistence.keepOnUninstall`   | `true`                   | Keep the PVC when the release is uninstalled                 |
-| `resources`                     | 256Mi request, 1Gi limit | For hosted raw derivation under Kata, 3Gi or more and a CPU limit |
+| Value                           | Default                           | Purpose                                                      |
+| ------------------------------- | --------------------------------- | ------------------------------------------------------------ |
+| `mode`                          | `pg-serve`                        | `pg-serve` or `hosted`                                       |
+| `image.repository`, `image.tag` | none                              | Required; pin an exact build                                 |
+| `runtimeClassName`              | empty                             | Pod runtime class; a Kata class for hosted raw derivation    |
+| `postgres.host`                 | `agentsview-db-rw`                | PostgreSQL host                                              |
+| `postgres.database`             | `app`                             | Database name                                                |
+| `postgres.sslMode`              | `require`                         | `require`, `verify-ca` or `verify-full`                      |
+| `postgres.schema`               | `agentsview`                      | Schema served in `pg-serve` mode                             |
+| `postgres.credentials`          | `agentsview-db-app` in `pg-serve` | Secret with the server's login; required in `hosted` mode    |
+| `hosted.tenant`                 | empty                             | Required in `hosted` mode                                    |
+| `hosted.schema`                 | `hosted_sessions`                 | Tenant schema                                                |
+| `hosted.rawDerivation`          | `true`                            | Parse uploads into PostgreSQL                                |
+| `hosted.provision.enabled`      | `false`                           | Run `hosted-provision` as a pre-install and pre-upgrade hook |
+| `auth.required`                 | `true`                            | Require the bearer token on `/api/`                          |
+| `auth.existingSecret`           | empty                             | Secret with the bearer token                                 |
+| `cursorSecret.existingSecret`   | empty                             | Secret with the cursor HMAC key                              |
+| `server.publicURL`              | empty                             | Browser URL behind an ingress or proxy                       |
+| `server.basePath`               | empty                             | URL prefix when mounted below a path                         |
+| `networkPolicy.enabled`         | `false`                           | Render an ingress policy that admits kubelet probes          |
+| `persistence.enabled`           | `true`                            | Persistent data volume; required in `hosted` mode            |
+| `persistence.keepOnUninstall`   | `true`                            | Keep the PVC when the release is uninstalled                 |
+| `resources`                     | 256Mi request, 1Gi limit          | Under Kata, 3Gi or more and a CPU limit for raw derivation   |
