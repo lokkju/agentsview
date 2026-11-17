@@ -62,6 +62,19 @@ its own uid. The init container creates this subdirectory as uid 1000.
 /data/agentsview
 {{- end }}
 
+{{/*
+Secret holding the running server's database login. pg-serve falls back to
+the CNPG application Secret; hosted mode has no default because the server
+refuses any role with privileges outside its tenant schema.
+*/}}
+{{- define "agentsview.pgCredentialsSecret" -}}
+{{- $secret := .Values.postgres.credentials.existingSecret -}}
+{{- if and (not $secret) (eq .Values.mode "pg-serve") -}}
+{{- $secret = "agentsview-db-app" -}}
+{{- end -}}
+{{- $secret -}}
+{{- end }}
+
 {{/* Path of the PostgreSQL CA bundle inside the containers. */}}
 {{- define "agentsview.pgCAPath" -}}
 /etc/agentsview/postgres-ca/ca.crt
@@ -98,9 +111,6 @@ from the environment, so passwords never appear in config.toml or values.
 {{- if not $v.postgres.host -}}
 {{- fail "postgres.host is required." -}}
 {{- end -}}
-{{- if not $v.postgres.credentials.existingSecret -}}
-{{- fail "postgres.credentials.existingSecret is required; the chart never takes a database password as a value." -}}
-{{- end -}}
 {{- if and (has $v.postgres.sslMode (list "verify-ca" "verify-full")) (not $v.postgres.caSecret.name) -}}
 {{- fail (printf "postgres.sslMode %s needs postgres.caSecret.name." $v.postgres.sslMode) -}}
 {{- end -}}
@@ -111,6 +121,12 @@ from the environment, so passwords never appear in config.toml or values.
 {{- fail "auth.required=false is meant for a server behind an authenticating proxy; set server.publicURL to the proxy's browser URL." -}}
 {{- end -}}
 {{- if eq $v.mode "hosted" -}}
+{{- if not $v.postgres.credentials.existingSecret -}}
+{{- fail "hosted mode requires postgres.credentials.existingSecret: a Secret for a dedicated runtime role that owns nothing and has no privileges on any other schema. The CNPG application Secret does not qualify: that role owns the database, and the server refuses it. See README.md, \"Create the runtime role\"." -}}
+{{- end -}}
+{{- if and $v.hosted.provision.enabled (eq $v.postgres.credentials.existingSecret $v.hosted.provision.credentials.existingSecret) -}}
+{{- fail (printf "postgres.credentials.existingSecret and hosted.provision.credentials.existingSecret are both %q. The provision Job needs the schema owner and the server needs a separate restricted runtime role; see README.md, \"Create the runtime role\"." $v.postgres.credentials.existingSecret) -}}
+{{- end -}}
 {{- if not $v.hosted.tenant -}}
 {{- fail "hosted.tenant is required in hosted mode." -}}
 {{- end -}}

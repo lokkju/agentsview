@@ -58,7 +58,7 @@ password or token as a value.
 | ------------------------------ | ---------------------- | --------------------------- | ------------------------------ |
 | `auth.existingSecret`          | `token`                | Web UI, API and MCP clients | When `auth.required` is true   |
 | `cursorSecret.existingSecret`  | `cursor-secret`        | Signed pagination cursors   | In `hosted` mode               |
-| `postgres.credentials`         | `username`, `password` | The running server          | Always                         |
+| `postgres.credentials`         | `username`, `password` | The running server          | In `hosted` mode               |
 | `hosted.provision.credentials` | `username`, `password` | The provisioning Job        | When the Job is enabled        |
 | `postgres.caSecret`            | `ca.crt`               | TLS verification            | For `verify-ca`, `verify-full` |
 
@@ -87,29 +87,9 @@ postgres:
     name: agentsview-db-ca
 ```
 
-Add every other role as a CNPG managed role with its own password Secret, then
-point `postgres.credentials.existingSecret` at that Secret:
-
-```yaml
-# In the Cluster spec, outside this chart.
-spec:
-  managed:
-    roles:
-      - name: hosted_runtime
-        ensure: present
-        login: true
-        superuser: false
-        createdb: false
-        createrole: false
-        inherit: false
-        replication: false
-        bypassrls: false
-        passwordSecret:
-          name: agentsview-db-hosted-runtime
-```
-
-The password Secret has type `kubernetes.io/basic-auth` with `username` and
-`password` keys.
+In `pg-serve` mode, an empty `postgres.credentials.existingSecret` uses
+`agentsview-db-app`. Hosted mode has no default; see
+[Create the runtime role](#create-the-runtime-role).
 
 ## Mode: pg-serve
 
@@ -194,10 +174,58 @@ Kata changes resource planning:
   is slow for I/O-heavy work. Set `tmp.medium: Memory` to keep scratch space in
   guest RAM; it then counts against the memory limit.
 
+### Create the runtime role
+
+The hosted server refuses to start unless its login is a restricted role that
+owns nothing and can reach no schema but its tenant's. Rendering fails until
+`postgres.credentials.existingSecret` names that role's Secret, and it fails if
+the provision Job and the server would share one Secret.
+
+The CNPG application role (`agentsview-db-app`) does not qualify. It owns the
+database, so it has `CREATE` on it, and it usually has `USAGE` on other schemas
+in the same database. The server rejects it with "hosted runtime requires a
+restricted non-owner role without sibling access or DDL privileges".
+
+Declare a dedicated role as a CNPG managed role with its own password Secret:
+
+```yaml
+# In the Cluster spec, outside this chart.
+spec:
+  managed:
+    roles:
+      - name: hosted_runtime
+        ensure: present
+        login: true
+        superuser: false
+        createdb: false
+        createrole: false
+        inherit: false
+        replication: false
+        bypassrls: false
+        inRoles: []
+        passwordSecret:
+          name: agentsview-db-hosted-runtime
+```
+
+The password Secret has type `kubernetes.io/basic-auth` with `username` and
+`password` keys. The server checks the role at startup and refuses it when:
+
+- it is a member of any role, or is a superuser or has `CREATEDB`,
+  `CREATEROLE`, `REPLICATION` or `BYPASSRLS`;
+- it has `CREATE` on the database or on any schema;
+- it owns any schema, table, view or sequence;
+- it has `USAGE` on any schema other than the tenant schema and `public`, or any
+  privilege on a table or sequence outside the tenant schema;
+- it may execute a `SECURITY DEFINER` function outside the system schemas;
+- it has `TRUNCATE`, `TRIGGER` or `REFERENCES` on a tenant table.
+
+Grants to `PUBLIC` count. If another schema in the database grants `USAGE` to
+`PUBLIC`, revoke that grant or give AgentsView its own database. Never add the
+runtime role to the owner's group roles.
+
 ### Set it up
 
-1. Create the restricted runtime role as a CNPG managed role (see above). It
-   must own no objects and have no role memberships.
+1. Create the runtime role (see above).
 1. Provision the tenant schema as the owner. Either enable the chart's Job,
    which runs `agentsview replica pg hosted-provision provision` before each
    install and upgrade, or run that command yourself.
@@ -392,7 +420,7 @@ The most-used values follow. `values.yaml` documents every value, and
 | `postgres.database`             | `app`                    | Database name                                                |
 | `postgres.sslMode`              | `require`                | `require`, `verify-ca` or `verify-full`                      |
 | `postgres.schema`               | `agentsview`             | Schema served in `pg-serve` mode                             |
-| `postgres.credentials`          | `agentsview-db-app`      | Secret with the server's login                               |
+| `postgres.credentials`          | see purpose              | Server login; `agentsview-db-app` in `pg-serve`, required in `hosted` |
 | `hosted.tenant`                 | empty                    | Required in `hosted` mode                                    |
 | `hosted.schema`                 | `hosted_sessions`        | Tenant schema                                                |
 | `hosted.rawDerivation`          | `true`                   | Parse uploads into PostgreSQL                                |

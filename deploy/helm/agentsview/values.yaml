@@ -50,10 +50,14 @@ postgres:
   allowInsecure: false
   # Schema served in pg-serve mode. Hosted mode uses hosted.schema.
   schema: agentsview
-  # Login used by the running server. In hosted mode this must be the
-  # restricted runtime role, not the schema owner (see README.md).
+  # Login used by the running server.
+  #   pg-serve: empty uses agentsview-db-app, the CNPG application Secret.
+  #   hosted:   required, with no default. Name the Secret of a dedicated
+  #             runtime role that owns nothing and has no privileges on any
+  #             other schema. The server refuses the CNPG application role
+  #             (see README.md, "Create the runtime role").
   credentials:
-    existingSecret: agentsview-db-app
+    existingSecret: ""
     usernameKey: username
     passwordKey: password
 

@@ -151,12 +151,12 @@ spec:
             - name: PGUSER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.postgres.credentials.existingSecret }}
+                  name: {{ include "agentsview.pgCredentialsSecret" . }}
                   key: {{ .Values.postgres.credentials.usernameKey }}
             - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.postgres.credentials.existingSecret }}
+                  name: {{ include "agentsview.pgCredentialsSecret" . }}
                   key: {{ .Values.postgres.credentials.passwordKey }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
