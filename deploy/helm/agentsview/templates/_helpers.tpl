@@ -93,6 +93,42 @@ from the environment, so passwords never appear in config.toml or values.
 {{- $url -}}
 {{- end }}
 
+{{/*
+Runtime-role grants for hosted mode, printed by NOTES.txt. Keep in sync with
+the README and internal/postgres/raw_runtime_privileges.go. RUNTIME_ROLE is a
+placeholder; the chart cannot read the role name from its Secret.
+*/}}
+{{- define "agentsview.runtimeGrants" -}}
+{{- $s := .Values.hosted.schema -}}
+GRANT CONNECT ON DATABASE {{ .Values.postgres.database }} TO RUNTIME_ROLE;
+GRANT USAGE ON SCHEMA {{ $s }} TO RUNTIME_ROLE;
+GRANT SELECT ON ALL TABLES IN SCHEMA {{ $s }} TO RUNTIME_ROLE;
+GRANT UPDATE (dialogue_text) ON {{ $s }}.messages TO RUNTIME_ROLE;
+GRANT INSERT ON {{ $s }}.raw_device_tokens, {{ $s }}.raw_manifest_entries,
+  {{ $s }}.raw_manifest_objects, {{ $s }}.messages, {{ $s }}.tool_calls,
+  {{ $s }}.tool_result_events, {{ $s }}.usage_events,
+  {{ $s }}.session_plan_usage, {{ $s }}.secret_findings,
+  {{ $s }}.raw_projection_generations, {{ $s }}.raw_source_contributions,
+  {{ $s }}.raw_session_public_aliases, {{ $s }}.raw_embedding_outbox,
+  {{ $s }}.raw_manifests TO RUNTIME_ROLE;
+GRANT UPDATE (observed_outcome, observed_repeat, sequence_ending)
+  ON {{ $s }}.tool_calls TO RUNTIME_ROLE;
+GRANT INSERT, UPDATE ON {{ $s }}.raw_objects, {{ $s }}.raw_source_heads,
+  {{ $s }}.raw_ingest_jobs, {{ $s }}.raw_source_projections,
+  {{ $s }}.raw_session_groups, {{ $s }}.raw_content_revisions,
+  {{ $s }}.raw_session_branches, {{ $s }}.raw_corpus_state,
+  {{ $s }}.raw_projection_rollouts, {{ $s }}.excluded_sessions TO RUNTIME_ROLE;
+GRANT SELECT, INSERT, UPDATE, DELETE ON {{ $s }}.raw_message_dialogue TO RUNTIME_ROLE;
+GRANT INSERT, UPDATE, DELETE ON {{ $s }}.raw_upload_sessions, {{ $s }}.sessions,
+  {{ $s }}.session_sources, {{ $s }}.pinned_messages, {{ $s }}.raw_curation,
+  {{ $s }}.raw_pins TO RUNTIME_ROLE;
+GRANT INSERT, DELETE ON {{ $s }}.starred_sessions, {{ $s }}.raw_session_links,
+  {{ $s }}.friction_findings TO RUNTIME_ROLE;
+GRANT USAGE ON SEQUENCE {{ $s }}.raw_ingest_jobs_id_seq, {{ $s }}.tool_calls_id_seq,
+  {{ $s }}.tool_result_events_id_seq, {{ $s }}.usage_events_id_seq,
+  {{ $s }}.pinned_messages_id_seq TO RUNTIME_ROLE;
+{{- end }}
+
 {{/* Fail rendering on combinations that cannot work. */}}
 {{- define "agentsview.validate" -}}
 {{- $v := .Values -}}

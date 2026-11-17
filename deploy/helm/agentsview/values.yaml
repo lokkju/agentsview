@@ -82,7 +82,8 @@ hosted:
   # `agentsview replica pg hosted-provision provision` with the schema-owner
   # login before each install and upgrade. It installs or upgrades hosted
   # tables. It does not create the runtime role or grant it access; run the
-  # grants in docs/hosted-raw-sync.md yourself.
+  # grants in README.md ("Grant the runtime role") yourself. The image has no
+  # psql, so the chart cannot run them.
   provision:
     enabled: false
     credentials:

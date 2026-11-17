@@ -223,21 +223,102 @@ Grants to `PUBLIC` count. If another schema in the database grants `USAGE` to
 `PUBLIC`, revoke that grant or give AgentsView its own database. Never add the
 runtime role to the owner's group roles.
 
-### Set it up
+### Grant the runtime role
 
-1. Create the runtime role (see above).
-1. Provision the tenant schema as the owner. Either enable the chart's Job,
-   which runs `agentsview replica pg hosted-provision provision` before each
-   install and upgrade, or run that command yourself.
-1. Run the grants from
-   [Hosted Raw Sync](../../../docs/hosted-raw-sync.md#provision-a-hosted-instance)
-   as the owner, for example through `kubectl cnpg psql agentsview-db`. The
-   image has no `psql`, so the Job cannot run them. Until the grants are
-   complete, the server fails startup and Kubernetes restarts it.
+`hosted-provision` creates and upgrades the tenant's tables, but it never grants
+the runtime role access to them. Run the grants below as the schema owner or a
+superuser, after provisioning and again after every upgrade that provisions new
+tables. Replace `hosted_sessions` with `hosted.schema`, `hosted_runtime` with
+the runtime role and `app` with `postgres.database`. Every statement is safe to
+repeat.
+
+```sql
+GRANT CONNECT ON DATABASE app TO hosted_runtime;
+GRANT USAGE ON SCHEMA hosted_sessions TO hosted_runtime;
+GRANT SELECT ON ALL TABLES IN SCHEMA hosted_sessions TO hosted_runtime;
+GRANT UPDATE (dialogue_text) ON hosted_sessions.messages TO hosted_runtime;
+
+GRANT INSERT ON hosted_sessions.raw_device_tokens,
+  hosted_sessions.raw_manifest_entries, hosted_sessions.raw_manifest_objects,
+  hosted_sessions.messages, hosted_sessions.tool_calls,
+  hosted_sessions.tool_result_events, hosted_sessions.usage_events,
+  hosted_sessions.session_plan_usage, hosted_sessions.secret_findings,
+  hosted_sessions.raw_projection_generations,
+  hosted_sessions.raw_source_contributions,
+  hosted_sessions.raw_session_public_aliases,
+  hosted_sessions.raw_embedding_outbox TO hosted_runtime;
+
+GRANT UPDATE (observed_outcome, observed_repeat, sequence_ending)
+  ON hosted_sessions.tool_calls TO hosted_runtime;
+
+GRANT INSERT, UPDATE ON hosted_sessions.raw_objects,
+  hosted_sessions.raw_source_heads, hosted_sessions.raw_ingest_jobs,
+  hosted_sessions.raw_source_projections, hosted_sessions.raw_session_groups,
+  hosted_sessions.raw_content_revisions, hosted_sessions.raw_session_branches,
+  hosted_sessions.raw_corpus_state, hosted_sessions.raw_projection_rollouts,
+  hosted_sessions.excluded_sessions TO hosted_runtime;
+GRANT INSERT ON hosted_sessions.raw_manifests TO hosted_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON hosted_sessions.raw_message_dialogue
+  TO hosted_runtime;
+
+GRANT INSERT, UPDATE, DELETE ON hosted_sessions.raw_upload_sessions,
+  hosted_sessions.sessions, hosted_sessions.session_sources,
+  hosted_sessions.pinned_messages, hosted_sessions.raw_curation,
+  hosted_sessions.raw_pins TO hosted_runtime;
+GRANT INSERT, DELETE ON hosted_sessions.starred_sessions,
+  hosted_sessions.raw_session_links TO hosted_runtime;
+GRANT INSERT, DELETE ON hosted_sessions.friction_findings TO hosted_runtime;
+
+GRANT USAGE ON SEQUENCE hosted_sessions.raw_ingest_jobs_id_seq,
+  hosted_sessions.tool_calls_id_seq, hosted_sessions.tool_result_events_id_seq,
+  hosted_sessions.usage_events_id_seq, hosted_sessions.pinned_messages_id_seq
+  TO hosted_runtime;
+```
+
+This list follows the server's startup check
+(`internal/postgres/raw_runtime_privileges.go`). It differs from
+[Hosted Raw Sync](../../../docs/hosted-raw-sync.md#provision-a-hosted-instance)
+in one place: the server needs `INSERT, UPDATE` on `excluded_sessions`, and that
+guide grants only `INSERT`. With only `INSERT` the server stops with "hosted
+runtime projection privileges for excluded_sessions are incomplete". For
+`archive_content = "usage"` and for adopted schemas, add the grants that guide
+describes.
+
+The image has no `psql`, so the chart cannot run these grants for you. Run them
+from the CNPG plugin, for example `kubectl cnpg psql agentsview-db -- -d app`,
+or from any client that can reach the database.
+
+### Install
+
+The server checks its grants at startup and exits until they are complete, so
+the first install cannot finish healthy on its own. Install without `--wait` or
+`--atomic`, then grant:
+
+1. Create the runtime role and the Secrets (see above).
+1. Write a values file like the one below. With `hosted.provision.enabled`, a
+   pre-install hook Job runs `agentsview replica pg hosted-provision provision`
+   as the owner before the server starts. Without it, run that command yourself
+   with an owner connection first.
+1. Install the chart:
+
+   ```bash
+   helm install agentsview deploy/helm/agentsview \
+     --namespace agentsview --values values-hosted.yaml
+   ```
+
+   The server exits at startup and Kubernetes restarts it until the next step.
+
+1. Run the [runtime grants](#grant-the-runtime-role).
+1. Restart the server so it does not wait out its crash back-off:
+   `kubectl -n agentsview rollout restart deploy/agentsview`.
 1. Enroll each device and give it the server URL, device ID and credential.
    AgentsView has no enrollment command or endpoint yet.
 1. On each machine, run `agentsview source raw backfill` once, then
    `agentsview source raw watch`.
+
+Upgrades follow the same order. The pre-upgrade hook provisions any new tables,
+and the new server refuses to start until they are granted, so leave out
+`--wait` and `--atomic`, run the grants, then restart the Deployment.
 
 ```yaml
 mode: hosted

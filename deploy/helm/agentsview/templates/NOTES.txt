@@ -33,10 +33,18 @@ Hosted raw sync, tenant {{ .Values.hosted.tenant }}, schema {{ .Values.hosted.sc
 {{- else }}
   1. Run `agentsview replica pg hosted-provision provision` as the schema owner.
 {{- end }}
-  2. Apply the runtime role grants from docs/hosted-raw-sync.md as the owner.
-     The server fails startup and restarts until they are complete.
-  3. Enroll each device and give it the server URL, device ID and credential.
-  4. On each machine: agentsview source raw watch
+  2. Grant the runtime role access as the schema owner or a superuser. The
+     image has no psql; use `kubectl cnpg psql <cluster> -- -d {{ .Values.postgres.database }}` or any
+     client. The server exits at startup and restarts until the grants are
+     complete. Run them again after every upgrade. Replace RUNTIME_ROLE with
+     the login in Secret {{ .Values.postgres.credentials.existingSecret }}:
+
+{{ include "agentsview.runtimeGrants" . | indent 6 }}
+
+  3. Skip the crash back-off:
+       kubectl --namespace {{ .Release.Namespace }} rollout restart deploy/{{ include "agentsview.fullname" . }}
+  4. Enroll each device and give it the server URL, device ID and credential.
+  5. On each machine: agentsview source raw backfill, then agentsview source raw watch
 {{- if .Values.hosted.rawDerivation }}
 
 Raw derivation runs under runtime class {{ .Values.runtimeClassName }}. The server

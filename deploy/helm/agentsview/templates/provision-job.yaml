@@ -3,7 +3,8 @@
 # Runs `agentsview replica pg hosted-provision provision` as the schema owner
 # before each install and upgrade. It runs before the chart's other resources
 # exist, so it carries its own config and uses the namespace's default
-# service account without a token. Grants for the runtime role stay manual.
+# service account without a token. Grants for the runtime role stay manual:
+# the image has no psql, and agentsview has no command that applies them.
 apiVersion: batch/v1
 kind: Job
 metadata:
