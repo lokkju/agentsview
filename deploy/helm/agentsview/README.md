@@ -513,14 +513,12 @@ The Deployment runs one replica with the `Recreate` strategy. The data volume is
 
 ## Limits
 
-- The raw custody repository keeps a SQLite catalog under `/data/agentsview/raw-sync/`. Its
-  locking and fsync behavior on a volume reached through virtio-fs under Kata is
-  untested. Check it before the volume holds data you cannot rebuild.
-- The parser sandbox has passed its tests under Kata without a read-only root
-  filesystem. This chart sets `readOnlyRootFilesystem: true`; if the server
-  reports isolation as unavailable, try
-  `securityContext.readOnlyRootFilesystem: false` before suspecting the runtime
-  class.
+- The raw custody repository keeps a SQLite catalog under
+  `/data/agentsview/raw-sync/`, which Kata reaches through virtio-fs. A smoke
+  test under `kata-clh-runtime-rs` with this chart's read-only root filesystem
+  parsed one upload end to end, and a copy of the catalog passed
+  `PRAGMA integrity_check`. That covers one pod and light load; locking under
+  concurrent uploads and recovery after a guest crash are untested.
 - When the sandbox fails, the child exits with code 78 and nothing on stderr, so
   the server reports only that isolation is unavailable.
 - Semantic search does not work on hosted sessions, and hosted sessions carry no
