@@ -139,6 +139,12 @@ spec:
               value: /tmp
             - name: TMPDIR
               value: /tmp
+            # Raw custody (docbank) keeps its lock registry under the passwd
+            # home of the current uid unless this is set. The image has no
+            # passwd entry for uid 1000, so without it raw-sync uploads fail.
+            # One pod per data volume, so a per-pod directory is enough.
+            - name: DOCBANK_LOCK_DIR
+              value: /tmp/docbank-locks
             - name: PGUSER
               valueFrom:
                 secretKeyRef:
