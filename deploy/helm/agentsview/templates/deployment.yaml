@@ -44,9 +44,11 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
-        # Writes config.toml into the data directory. config.toml must live
-        # there, and the server writes other files next to it, so it cannot be
-        # a read-only ConfigMap mount.
+        # Creates the data directory below the volume root and writes
+        # config.toml into it. config.toml must live there, and the server
+        # writes other files next to it, so it cannot be a read-only ConfigMap
+        # mount. The directory is created as the pod's uid because the server
+        # refuses a data directory it does not own.
         - name: config
           image: {{ include "agentsview.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -55,6 +57,7 @@ spec:
             - -ec
             - |
               umask 077
+              mkdir -p "$AGENTSVIEW_DATA_DIR"
               out="$AGENTSVIEW_DATA_DIR/config.toml.new"
               : > "$out"
               if [ -s /run/secrets/agentsview/cursor/cursor-secret ]; then
@@ -71,7 +74,7 @@ spec:
               fi
           env:
             - name: AGENTSVIEW_DATA_DIR
-              value: /data
+              value: {{ include "agentsview.dataDir" . }}
             - name: LOG_TO_STDERR
               value: {{ .Values.server.logToStderr | quote }}
           securityContext:
@@ -126,7 +129,7 @@ spec:
             - name: AGENTSVIEW_MODE
               value: pg-serve
             - name: AGENTSVIEW_DATA_DIR
-              value: /data
+              value: {{ include "agentsview.dataDir" . }}
             - name: AGENTSVIEW_NO_BROWSER
               value: "true"
             - name: AGENTSVIEW_REQUIRE_AUTH

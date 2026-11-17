@@ -23,7 +23,7 @@ authenticates every request, and keep the pod unreachable from elsewhere.
 
 Server logs: kubectl --namespace {{ .Release.Namespace }} logs deploy/{{ include "agentsview.fullname" . }}
 {{- if not .Values.server.logToStderr }}
-(The server writes most of its log to /data/debug.log; set server.logToStderr=true to see it here.)
+(The server writes most of its log to /data/agentsview/debug.log; set server.logToStderr=true to see it here.)
 {{- end }}
 {{- if eq .Values.mode "hosted" }}
 

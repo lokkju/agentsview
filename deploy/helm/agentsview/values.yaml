@@ -145,8 +145,10 @@ extraEnvFrom: []
 extraVolumes: []
 extraVolumeMounts: []
 
-# The data directory (/data) holds config.toml, the installation identity, and
-# in hosted mode the raw custody repository (raw-sync/) and upload spool.
+# The data volume is mounted at /data. The server's data directory is
+# /data/agentsview, which the init container creates as the pod's uid. It holds
+# config.toml, the installation identity, and in hosted mode the raw custody
+# repository (raw-sync/) and upload spool.
 # Hosted mode requires a persistent volume.
 persistence:
   enabled: true

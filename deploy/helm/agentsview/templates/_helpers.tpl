@@ -53,6 +53,15 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- default (printf "%s-data" (include "agentsview.fullname" .)) .Values.persistence.existingClaim }}
 {{- end }}
 
+{{/*
+Server data directory. The volume root at /data is owned by root (fsGroup
+only adds group access), and the server requires a data directory owned by
+its own uid. The init container creates this subdirectory as uid 1000.
+*/}}
+{{- define "agentsview.dataDir" -}}
+/data/agentsview
+{{- end }}
+
 {{/* Path of the PostgreSQL CA bundle inside the containers. */}}
 {{- define "agentsview.pgCAPath" -}}
 /etc/agentsview/postgres-ca/ca.crt

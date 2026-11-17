@@ -162,7 +162,7 @@ workstation pushes.
 ## Mode: hosted
 
 Devices upload original session files, and the server keeps them in a raw
-custody repository under `/data/raw-sync/` on the persistent volume. With
+custody repository under `/data/agentsview/raw-sync/` on the persistent volume. With
 `hosted.rawDerivation` (the default) it parses each upload in a sandbox and
 writes sessions into one tenant's schema.
 
@@ -337,26 +337,34 @@ is reachable or that the parser worker is healthy.
 
 ## Storage, configuration and logs
 
-`config.toml` must live in the data directory (`/data`), and the server writes
-other files next to it. An init container copies the ConfigMap's `config.toml`
-there on every start and prepends `cursor_secret` from its Secret. Changes made
+The data volume is mounted at `/data`, and the server's data directory is
+`/data/agentsview`. The volume root belongs to root, with group access from the
+pod's `fsGroup`, and the server refuses a data directory that uid 1000 does not
+own. An init container running as uid 1000 creates `/data/agentsview` on every
+start.
+
+`config.toml` must live in the data directory, and the server writes other files
+next to it. The init container copies the ConfigMap's `config.toml` there on
+every start and prepends `cursor_secret` from its Secret. Changes made
 in the web UI's settings do not survive a restart; change the chart's values
 instead. `config.extraSettings` adds top-level keys and `config.extraTables`
 adds whole tables.
 
-The server writes its log to `/data/debug.log`. With `server.logToStderr: true`
+The server writes its log to `/data/agentsview/debug.log`. With `server.logToStderr: true`
 (the default) the init container makes that file a symlink to the container's
 stderr, so `kubectl logs` shows it. The server never rotates a symlinked log.
 
 `/tmp` is an `emptyDir`. `HOME` and `TMPDIR` point at it, so nothing writes to
-the read-only root filesystem.
+the read-only root filesystem. Raw custody keeps its lock registry in
+`/tmp/docbank-locks` (`DOCBANK_LOCK_DIR`), because the image has no passwd entry
+for uid 1000 and the registry otherwise lives under that user's home.
 
 The Deployment runs one replica with the `Recreate` strategy. The data volume is
 `ReadWriteOnce`, and each hosted tenant must have exactly one server.
 
 ## Limits
 
-- The raw custody repository keeps a SQLite catalog under `/data/raw-sync/`. Its
+- The raw custody repository keeps a SQLite catalog under `/data/agentsview/raw-sync/`. Its
   locking and fsync behavior on a volume reached through virtio-fs under Kata is
   untested. Check it before the volume holds data you cannot rebuild.
 - The parser sandbox has passed its tests under Kata without a read-only root
